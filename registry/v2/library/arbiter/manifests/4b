@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+  "config": {
+    "mediaType": "application/vnd.ollaya.config.v1+json",
+    "digest": "sha256:ARBITER_CONFIG_PLACEHOLDER",
+    "size": 0,
+    "urls": [
+      "https://ollaya.dev/blobs/sha256-ARBITER_CONFIG_PLACEHOLDER"
+    ]
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.ollaya.graph.onnx",
+      "digest": "sha256:ARBITER_GRAPH_PLACEHOLDER",
+      "size": 0,
+      "urls": [
+        "https://ollaya.dev/blobs/sha256-ARBITER_GRAPH_PLACEHOLDER"
+      ],
+      "annotations": {
+        "org.ollaya.precision": "fp32"
+      }
+    },
+    {
+      "mediaType": "application/vnd.ollaya.weights",
+      "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_1",
+      "size": 0,
+      "urls": [
+        "https://huggingface.co/unsloth/gemma-3-4b-it/resolve/PINNED_AT_PR_TIME/model-00001-of-00002.safetensors"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.weights",
+      "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_2",
+      "size": 0,
+      "urls": [
+        "https://huggingface.co/unsloth/gemma-3-4b-it/resolve/PINNED_AT_PR_TIME/model-00002-of-00002.safetensors"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.weights",
+      "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_3",
+      "size": 0,
+      "urls": [
+        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/PINNED_AT_PR_TIME/adapter_model.safetensors"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.weights",
+      "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_4",
+      "size": 0,
+      "urls": [
+        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/PINNED_AT_PR_TIME/head.pt"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.tokenizer",
+      "digest": "sha256:ARBITER_TOKENIZER_PLACEHOLDER",
+      "size": 0,
+      "urls": [
+        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/PINNED_AT_PR_TIME/tokenizer.json"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.decision",
+      "digest": "sha256:ARBITER_DECISION_PLACEHOLDER",
+      "size": 0,
+      "urls": [
+        "https://ollaya.dev/blobs/sha256-ARBITER_DECISION_PLACEHOLDER"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.calibration",
+      "digest": "sha256:ARBITER_CALIBRATION_PLACEHOLDER",
+      "size": 0,
+      "urls": [
+        "https://ollaya.dev/blobs/sha256-ARBITER_CALIBRATION_PLACEHOLDER"
+      ]
+    },
+    {
+      "mediaType": "application/vnd.ollaya.license",
+      "digest": "sha256:ARBITER_LICENSE_PLACEHOLDER",
+      "size": 0,
+      "urls": [
+        "https://ollaya.dev/blobs/sha256-ARBITER_LICENSE_PLACEHOLDER"
+      ]
+    }
+  ]
+}
