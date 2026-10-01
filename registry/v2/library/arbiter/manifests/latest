@@ -26,7 +26,7 @@
       "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_1",
       "size": 0,
       "urls": [
-        "https://huggingface.co/unsloth/gemma-3-4b-it/resolve/PINNED_AT_PR_TIME/model-00001-of-00002.safetensors"
+        "https://huggingface.co/unsloth/gemma-3-4b-it/resolve/bf46152c47f5dd20b896357cb51abc4c03b8ee8c/model-00001-of-00002.safetensors"
       ]
     },
     {
@@ -34,7 +34,7 @@
       "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_2",
       "size": 0,
       "urls": [
-        "https://huggingface.co/unsloth/gemma-3-4b-it/resolve/PINNED_AT_PR_TIME/model-00002-of-00002.safetensors"
+        "https://huggingface.co/unsloth/gemma-3-4b-it/resolve/bf46152c47f5dd20b896357cb51abc4c03b8ee8c/model-00002-of-00002.safetensors"
       ]
     },
     {
@@ -42,7 +42,7 @@
       "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_3",
       "size": 0,
       "urls": [
-        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/PINNED_AT_PR_TIME/adapter_model.safetensors"
+        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/0c44271c59f89758e3cae17b032e98a9140093e9/adapter_model.safetensors"
       ]
     },
     {
@@ -50,7 +50,7 @@
       "digest": "sha256:ARBITER_WEIGHTS_PLACEHOLDER_4",
       "size": 0,
       "urls": [
-        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/PINNED_AT_PR_TIME/head.pt"
+        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/0c44271c59f89758e3cae17b032e98a9140093e9/head.pt"
       ]
     },
     {
@@ -58,7 +58,7 @@
       "digest": "sha256:ARBITER_TOKENIZER_PLACEHOLDER",
       "size": 0,
       "urls": [
-        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/PINNED_AT_PR_TIME/tokenizer.json"
+        "https://huggingface.co/hiteshluke/arbiter-4b/resolve/0c44271c59f89758e3cae17b032e98a9140093e9/tokenizer.json"
       ]
     },
     {

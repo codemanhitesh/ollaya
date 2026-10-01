@@ -27,9 +27,9 @@ PAD_FALLBACK = 0
 MODELS = {
     "arbiter-4b": {
         "repo": "hiteshluke/arbiter-4b",
-        "revision": "PINNED_AT_PR_TIME",
+        "revision": "0c44271c59f89758e3cae17b032e98a9140093e9",
         "base": "unsloth/gemma-3-4b-it",
-        "base_revision": "PINNED_AT_PR_TIME",
+        "base_revision": "bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
         "base_files": ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
     },
 }
@@ -188,7 +188,7 @@ def encode(tok, m: ArbiterModel, state, questions):
 
 
 def rows(enc) -> List[Dict[str, Any]]:
-    """Per-row dicts {'ids', 'last_pos', 'slots'}; mirrors kev.ref.rows()."""
+    """Per-row dicts {'ids', 'last_pos', 'slots'}."""
     return enc["rows"]
 
 

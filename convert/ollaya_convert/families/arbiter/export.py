@@ -100,8 +100,8 @@ def export(slug: str, out_dir: str, run_dir: str, base_dir: str):
           % max(float((g - w).abs().max()) for g, w in zip(got, want)))
 
     # The actual weightless export is deferred to llm_common.onnx_export; this file wires the dynamic
-    # shapes and the source rewrite the way kev/export.py does. Maintainers finish the export at PR time
-    # by swapping the pinned revisions above and running this entrypoint.
+    # shapes and the source rewrite the way the other LoRA + pointer-head families do. Maintainers
+    # finish the export at PR time by swapping the pinned revisions above and running this entrypoint.
     try:
         from ..llm_common import onnx_export as ox
         from ...weightless_sharded import safetensors_source, torchzip_source
@@ -226,7 +226,7 @@ def export(slug: str, out_dir: str, run_dir: str, base_dir: str):
           "unused", files["unused_checkpoint_tensors"])
 
 
-# Exposed for the manifest/decision consumers that mirror kev's shape.
+# Exposed for the manifest/decision consumers that mirror the family's shape.
 decision = {
     "engine": "onnx",
     "family": "arbiter",

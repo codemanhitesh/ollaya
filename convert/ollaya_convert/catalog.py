@@ -328,12 +328,12 @@ CATALOG = {
         "license": "Apache-2.0",
         "license_text": _arbiter_license("hiteshluke/arbiter-4b", "gemma-3-4b-it"),
         "tags": {
-            "4b": _wl("arbiter-4b", "hiteshluke/arbiter-4b", "PINNED_AT_PR_TIME",
+            "4b": _wl("arbiter-4b", "hiteshluke/arbiter-4b", "0c44271c59f89758e3cae17b032e98a9140093e9",
                       "Arbiter v3.3: LoRA + 24-slot pointer head on Gemma 3 4B. Three decision primitives "
                       "(noul, choice, score) in one forward pass.",
                       "4.3B", 8192, ["multilingual"], wl_dir=os.path.join(OUT, "arbiter-4b"),
                       license_text=_arbiter_license("hiteshluke/arbiter-4b", "gemma-3-4b-it"),
-                      weights=_arbiter_weights("unsloth/gemma-3-4b-it", "PINNED_AT_PR_TIME", 2)),
+                      weights=_arbiter_weights("unsloth/gemma-3-4b-it", "bf46152c47f5dd20b896357cb51abc4c03b8ee8c", 2)),
         },
         "aliases": {"latest": "4b"},
         "parity": "PARITY-PENDING",
