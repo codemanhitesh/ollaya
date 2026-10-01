@@ -14,7 +14,7 @@ weights come unmodified from `unsloth/gemma-3-4b-it`. The inference code lives i
 
 | Model | Checkpoint | Base (license) | Temperature | Status in Ollaya |
 |---|---|---|---|---|
-| `hiteshluke/arbiter-4b` | v3.3 (`PINNED_AT_PR_TIME`) | `unsloth/gemma-3-4b-it` @ `PINNED_AT_PR_TIME` (Gemma Terms of Use), 2 shards | 1.0 | **converted, ONNX** (weights stay BF16 in memory) |
+| `hiteshluke/arbiter-4b` | v3.3 (`0c44271c59f89758e3cae17b032e98a9140093e9`) | `unsloth/gemma-3-4b-it` @ `bf46152c47f5dd20b896357cb51abc4c03b8ee8c` (Gemma Terms of Use), 2 shards | 1.0 | **converted, ONNX** (weights stay BF16 in memory) |
 
 ## Recommended engine: ONNX (single forward)
 
@@ -148,8 +148,8 @@ Arbiter v3.3 at ship time:
 
 `families/arbiter/parity.py`: ONNX Runtime CPU with the LoRA unmerged, against the inline fp32 reference
 (`ref.load(dtype=fp32, merge=True)`). Tolerance: max |Δ slot score| < 1e-4; 100 % argmax agreement.
-Results are filled in after maintainers run the export against the pinned HF revisions and regenerate
-the sha256 placeholders in the manifest.
+Numbers are filled in once a maintainer with GPU runs the export against the pinned revisions and
+drops the resulting `model.onnx` sha256 into both manifests.
 
 ## Attribution
 
