@@ -8,15 +8,18 @@
 //!           "Options:\n{block}\n\nAnswer:")
 //!   noul    block = "T. Yes / True\nF. No / False"
 //!   choice  block = "A. {option 0}\nB. {option 1}\n..."   1..=16 options, letters A..P
-//!   score   block = "0\n1\n2\n3\n4\n5"                    exactly 6 levels
+//!   score   block = "0\n1\n2\n3\n4\n5"                    exactly 6 levels (the trained block)
+//!   score   block = "A. {level 0}\nB. {level 1}\n..."     any other count, 1..=16 levels
 //! ```
 //!
-//! A choice option is `name` or `name: render(description)`; the noul and score descriptions are
-//! not part of the prompt. The graph returns the head's 24 raw slot scores at the row's last
-//! position; a question's option logits are the scores at its slots (`decision.json` `slots`):
-//! noul `[F, T]` (false, true), choice `A..`, score `0..5`. Requests the fixed head cannot answer
-//! (a choice over 16 options, a score with other than 6 levels, a row over `max_row_tokens`) are
-//! rejected, never truncated.
+//! A choice option is `name` or `name: render(description)`; the noul descriptions and a 6-level
+//! score's level descriptions are not part of the prompt. The model was trained on 6-level scores
+//! only: a score with any other number of levels is asked as a choice over `render(level)`, in
+//! level order, a framing it was not trained for. The graph returns the head's 24 raw slot scores
+//! at the row's last position; a question's option logits are the scores at its slots
+//! (`decision.json` `slots`): noul `[F, T]` (false, true), choice `A..`, a 6-level score `0..5`,
+//! any other score `A..`. Requests the fixed head cannot answer (a choice over 16 options, a score
+//! over 16 levels, a row over `max_row_tokens`) are rejected, never truncated.
 
 use std::fmt::Write;
 
@@ -99,9 +102,27 @@ impl ArbiterLayout {
         }
     }
 
-    /// Most options a choice can have.
+    /// Most options a choice (or levels a score) can have.
     pub fn max_options(&self) -> usize {
         self.slots.choice.len()
+    }
+
+    /// A choice block over `texts` (letters A.. in order) and its slots, or `TOO_MANY_OPTIONS`.
+    fn choice_block(&self, qid: &str, texts: Vec<String>) -> Result<(String, Vec<usize>), Error> {
+        if texts.len() > self.max_options() {
+            return Err(Error::TooManyOptions {
+                question: qid.to_owned(),
+                options: texts.len(),
+                head_max_len: self.max_options(),
+            });
+        }
+        let mut block = String::new();
+        for (i, text) in texts.iter().enumerate() {
+            let sep = if i > 0 { "\n" } else { "" };
+            let letter = char::from(LETTERS[i]);
+            let _ = write!(block, "{sep}{letter}. {text}");
+        }
+        Ok((block, self.slots.choice[..texts.len()].to_vec()))
     }
 
     /// One question's instructions, option block and slots, validated as the reference does.
@@ -124,25 +145,19 @@ impl ArbiterLayout {
                     Some(Value::Object(m)) if !m.is_empty() => m,
                     _ => return Err(bad("choice criteria must be a non-empty object")),
                 };
-                if m.len() > self.max_options() {
-                    return Err(Error::TooManyOptions {
-                        question: qid.to_owned(),
-                        options: m.len(),
-                        head_max_len: self.max_options(),
-                    });
-                }
-                let mut block = String::new();
-                for (i, (name, d)) in m.iter().enumerate() {
-                    let sep = if i > 0 { "\n" } else { "" };
-                    let letter = char::from(LETTERS[i]);
-                    let _ = write!(block, "{sep}{letter}. {}", option_text(name, Some(d)));
-                }
-                (block, self.slots.choice[..m.len()].to_vec())
+                let texts = m.iter().map(|(name, d)| option_text(name, Some(d)));
+                self.choice_block(qid, texts.collect())?
             }
-            QType::Score => match criteria.and_then(Value::as_array).map(Vec::len) {
-                Some(SCORE_LEVELS) => (SCORE_BLOCK.to_owned(), self.slots.score.clone()),
-                Some(n) => return Err(bad(&format!("exactly 6 levels expected, got {n}"))),
-                None => return Err(bad("score criteria must be a list of 6 levels")),
+            QType::Score => match criteria.and_then(Value::as_array) {
+                // The trained block: digits 0..5, the level texts not in the prompt.
+                Some(levels) if levels.len() == SCORE_LEVELS => {
+                    (SCORE_BLOCK.to_owned(), self.slots.score.clone())
+                }
+                // Any other count: asked as a choice over the levels, in order.
+                Some(levels) if !levels.is_empty() => {
+                    self.choice_block(qid, levels.iter().map(render).collect())?
+                }
+                _ => return Err(bad("score criteria must be a non-empty list of levels")),
             },
         };
         let instructions = render(q.definition.get("instructions").unwrap_or(&Value::Null));
@@ -261,6 +276,29 @@ mod tests {
         assert_eq!(r[2].slots, [18, 19, 20, 21, 22, 23]);
     }
 
+    /// A score with `n` levels named `level 0`, `level 1`, ...
+    fn score(n: usize) -> Value {
+        let levels: Vec<String> = (0..n).map(|i| format!("level {i}")).collect();
+        json!({"type": "score", "instructions": "x", "criteria": levels})
+    }
+
+    #[test]
+    fn asks_other_scores_as_a_choice() {
+        let l = layout(8192);
+        for n in [1, 2, 4, 5, 7, 16] {
+            let r = rows(&l, json!("s"), json!({"q": score(n)})).unwrap();
+            assert_eq!(r[0].slots, (2..2 + n).collect::<Vec<_>>());
+            let block: Vec<String> = (0..n)
+                .map(|i| format!("{}. level {i}", char::from(LETTERS[i])))
+                .collect();
+            let want = format!("\n\nOptions:\n{}\n\nAnswer:", block.join("\n"));
+            assert!(text(&r[0].ids).ends_with(&want), "{n} levels");
+        }
+        let six = rows(&l, json!("s"), json!({"q": score(6)})).unwrap();
+        assert_eq!(six[0].slots, (18..24).collect::<Vec<_>>());
+        assert!(text(&six[0].ids).ends_with("Options:\n0\n1\n2\n3\n4\n5\n\nAnswer:"));
+    }
+
     #[test]
     fn takes_up_to_sixteen_options() {
         let q = json!({"q": choice(16)});
@@ -282,12 +320,15 @@ mod tests {
                 ..
             })
         ));
-        for n in [5, 7] {
-            let levels: Vec<String> = (0..n).map(|i| format!("level {i}")).collect();
-            let q = json!({"type": "score", "instructions": "x", "criteria": levels});
-            let r = rows(&l, json!("s"), json!({"ok": ok, "q": q}));
-            assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("exactly 6 levels")));
-        }
+        let r = rows(&l, json!("s"), json!({"ok": ok, "q": score(17)}));
+        assert!(matches!(
+            r,
+            Err(Error::TooManyOptions {
+                options: 17,
+                head_max_len: 16,
+                ..
+            })
+        ));
         let list = json!({"type": "choice", "instructions": "x", "criteria": ["a", "b"]});
         let r = rows(&l, json!("s"), json!({"q": list}));
         assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("non-empty object")));
