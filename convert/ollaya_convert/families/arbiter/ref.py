@@ -146,7 +146,10 @@ def text_model(conditional_generation):
 
 def load(run_dir: str, base_dir: str, device: str = "cpu", merge: bool = True):
     """Gemma 3 4B IT + the adapter (peft) + the 24-slot head, all fp32. Returns (model, head); `model` is the
-    peft model (merged into a plain `Gemma3ForConditionalGeneration` when `merge`)."""
+    peft model (merged into a plain `Gemma3ForConditionalGeneration` when `merge`).
+
+    `device="auto"` splits the decoder layers over every visible GPU (accelerate's `device_map="auto"`): the
+    fp32 model is about 17 GB, more than one 16 GB GPU holds. The arithmetic is the same, layer by layer."""
     import torch
     from peft import PeftModel
     from transformers import Gemma3ForConditionalGeneration
@@ -154,17 +157,25 @@ def load(run_dir: str, base_dir: str, device: str = "cpu", merge: bool = True):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     head_meta(run_dir)
+    kw = {}
+    if device == "auto":
+        # leave room on every GPU for activations (eager attention over rows of up to 8,192 tokens)
+        kw = {"device_map": "auto",
+              "max_memory": {i: int(torch.cuda.get_device_properties(i).total_memory * 0.8)
+                             for i in range(torch.cuda.device_count())}}
     base = Gemma3ForConditionalGeneration.from_pretrained(base_dir, torch_dtype=torch.float32,
-                                                          attn_implementation="eager")
+                                                          attn_implementation="eager", **kw)
     model = PeftModel.from_pretrained(base, run_dir)
     if merge:
         model = model.merge_and_unload()
-    model.to(device).eval()
+    if device != "auto":
+        model.to(device)
+    model.eval()
 
     head = torch.nn.Linear(base.config.text_config.hidden_size, NUM_SLOTS, bias=False)   # 2560
     state = torch.load(os.path.join(run_dir, "head.pt"), map_location="cpu", weights_only=True)
     head.load_state_dict({"weight": state["proj.weight"].float()})
-    head.to(device).eval()
+    head.to(text_model(base).norm.weight.device if device == "auto" else device).eval()
     for p in list(model.parameters()) + list(head.parameters()):
         p.requires_grad_(False)
     return model, head
@@ -174,12 +185,13 @@ def forward(model, head, rows) -> List[np.ndarray]:
     """Raw 24-slot scores (float64 copies of the fp32 values), one unpadded row at a time."""
     import torch
 
-    device = next(model.parameters()).device
+    device = model.get_input_embeddings().weight.device
+    hdev = head.weight.device
     out = []
     with torch.no_grad():
         for r in rows:
             o = model(input_ids=torch.tensor([r["ids"]], device=device), output_hidden_states=True,
                       use_cache=False, logits_to_keep=1)
             h = o.hidden_states[-1][0, -1]
-            out.append(head(h.float()).double().cpu().numpy())
+            out.append(head(h.float().to(hdev)).double().cpu().numpy())
     return out

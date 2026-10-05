@@ -37,7 +37,8 @@ def main():
     ap.add_argument("--td", type=int, default=40, help="typed-decisions rows when --requests is not given")
     ap.add_argument("--run", default=None)
     ap.add_argument("--base", default=None)
-    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--device", default="cuda",
+                    help="cuda, cpu, or auto: the fp32 model (17 GB) split over every visible GPU")
     ap.add_argument("--threads", type=int, default=0, help="ONNX Runtime intra-op threads (0 = all)")
     ap.add_argument("--budget", type=int, default=8192)
     ap.add_argument("--report", default=None)
