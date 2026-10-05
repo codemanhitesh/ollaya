@@ -11,7 +11,9 @@ last five evaluation heads (BF16, `head.pt`). One forward pass answers one quest
 |---|---|---|
 | `arbiter:4b`, `arbiter:latest` | `unsloth/gemma-3-4b-it@bf46152c`: two BF16 shards and `tokenizer.json`; `hiteshluke/arbiter-4b@0c44271c`: `adapter_model.safetensors` (F32) and `head.pt` | 1.0 (none fitted) |
 
-The head has three fixed slot ranges, so a question has at most 16 options (choice) and a score exactly 6 levels:
+The head has three fixed slot ranges, so a question has at most 16 options (choice). A score of exactly 6 levels
+uses the trained digit block and the score slots; a score of any other number of levels (1 to 16) is expressed as
+a choice over the rendered level labels and reads the choice slots:
 
 | Slots | Tokens | Read for |
 |---|---|---|
@@ -50,7 +52,8 @@ ids = [<bos>] + tok("State: {render(state)}\n\nQuestion: {render(instructions)}\
 
 block   noul    "T. Yes / True\nF. No / False"
         choice  "A. {option 0}\nB. {option 1}\n..."      one line per option, letters A..P
-        score   "0\n1\n2\n3\n4\n5"
+        score   "0\n1\n2\n3\n4\n5"                        exactly 6 levels: trained digit block, score slots
+        score   "A. {render(level 0)}\nB. ..."            other level counts (1..16): choice template, choice slots
 ```
 
 - `render`: `null` is `""`, a scalar is Python's `str()` (`True`, `1.0`, `1e-05`), a list is `- item` lines and an
@@ -58,7 +61,7 @@ block   noul    "T. Yes / True\nF. No / False"
 - The noul and score descriptions are not part of the prompt: the model was trained on the fixed blocks.
 - The head reads the last position (`last_pos = len(ids) - 1`).
 - **Rejected (422), never truncated:** a choice whose criteria are not an object, or hold more than 16 options
-  (`TOO_MANY_OPTIONS`); a score with other than 6 levels; a row over 8,192 tokens. A request with one such
+  (`TOO_MANY_OPTIONS`); a score with more than 16 levels; a row over 8,192 tokens. A request with one such
   question is rejected whole, like any invalid request.
 
 The reference prompt (`ref.py`) is the training script's three prompt functions, copied verbatim, tokenized by
@@ -90,19 +93,20 @@ shortest first under 8,192 padded tokens per `session.run` and returns the score
   `Answer:`). Ollaya reads rows of up to 8,192 tokens whole and rejects longer ones.
 - **Requests.** Training saw text; JSON states and instructions go through `render` above. Gemma's control tokens
   written in user text (`<start_of_turn>`, `<bos>`) are tokenized as control tokens, as in training.
-- **Fixed head.** Choices over 16 options and scores with other than 6 levels are rejected, not truncated or
-  rescaled.
+- **Fixed head.** Choices over 16 options and scores with more than 16 levels are rejected, not truncated or
+  rescaled. Scores with 1..16 levels other than 6 are expressed as choices over the rendered level labels.
 - **Temperature.** The checkpoint has no fitted temperature; `calibration.json` ships 1.0 for every type.
 
 ## Parity
 
-The shared request set (the edge cases and 40 typed-decisions rows, as JSONL), plus six arbiter cases in
-`check.py` (`EXTRA`): the shared set has no 6-level score and no 16-option choice, so these add both, a long state
-past the sliding window, and the two rejections of the fixed head.
+The shared request set (the edge cases and 40 typed-decisions rows, as JSONL), plus arbiter-specific cases in
+`check.py` (`EXTRA`): the shared set has no 6-level score and no 16-option choice, so these add both, a 2-level
+and a 16-level score expressed as choices, a long state past the sliding window, and the rejection of a score
+with more than 16 levels.
 
 - **Prompt** (`check.py`, no model needed): the port against the reference prompt, id for id, on the base's
-  tokenizer. Measured 2026-10-05 with transformers 4.57.6 and 5.17.0: 127 requests, 6 accepted whole and 121
-  rejected by both, 420 rows identical (every question of a rejected request is also compared on its own), 0
+  tokenizer. Measured 2026-10-05 with transformers 4.57.6: 128 requests, 107 accepted and identical, 21
+  rejected by both, 589 rows identical (every question of a rejected request is also compared on its own), 0
   mismatches.
 - **Goldens** (`goldens.py`): the reference model in fp32 (LoRA merged, TF32 off, one unpadded row at a time):
   token ids, last position and slots, all 24 slot scores, option logits and probabilities per question.
@@ -131,22 +135,23 @@ one GPU with enough memory, `--device cuda` does the same work.
 the weights at the pinned revisions (the base shards, `tokenizer.json`, `adapter_model.safetensors` and
 `head.pt` downloaded from the Hub; the base sha256 values match the table above):
 
-- **Prompt** (`check.py`): 127 requests, 6 identical, 121 rejected by both, 420 rows identical, 0 mismatches.
-- **Export**: 126 s to trace, 350 s in all on the CPU; peak process RSS 20.3 GiB. The weightless `model.onnx`
+- **Prompt** (`check.py`): 128 requests, 107 identical, 21 rejected by both, 589 rows identical, 0 mismatches.
+- **Export**: 126 s to trace, 361 s in all on the CPU; peak process RSS 20.3 GiB. The weightless `model.onnx`
   is 10.3 MB (921 external tensors, 445 casts); 439 tensors of the first base shard (the vision tower) and 162
   adapter tensors (its vision LoRA) are unused. The eager graph (LoRA unmerged, batched) is within 7.6e-6 of
   the reference on the export's three sample rows.
-- **Goldens**: 245 records (121 rejected requests, each followed by its `#valid` questions), 420 questions,
+- **Goldens**: 146 records (21 rejected requests, each followed by its `#valid` questions), 589 questions,
   fp32 reference split over both T4s.
-- **Export parity** (`parity.py`, ONNX Runtime 1.30 on the CPU): 420 rows identical, 0 row mismatches, 121
-  requests rejected by both, 0 rejection mismatches, the same decision on 420 of 420 questions. Largest slot
-  score difference 7.2e-5 (noul), 5.3e-5 (score), 3.2e-5 (choice); largest probability difference 1.4e-5.
+- **Export parity** (`parity.py`, ONNX Runtime 1.30 on the CPU): the v3 run was cancelled at 90 of 128
+  requests (422 questions processed, no mismatches at that point). An earlier run on the pre-score-as-choice
+  rows (420 questions) completed with 0 mismatches, max slot diff 7.2e-5 (noul), 5.3e-5 (score), 3.2e-5
+  (choice), max probability difference 1.4e-5.
 - **Runtime parity** (`parity_arbiter`, CUDA execution provider on one T4: Microsoft ONNX Runtime 1.28.2, CUDA
-  12 build, loaded with `--features ollaya-runner/cuda-dynamic`; `weights_in_memory` bf16): 420 rows identical,
+  12 build, loaded with `--features ollaya-runner/cuda-dynamic`; `weights_in_memory` bf16): 589 rows identical,
   0 row mismatches, 0 rejection mismatches, 0 questions refused by the shared question rules, the same
-  decision on 420 of 420 questions. Largest slot score difference 1.7e-4 (tolerance 1e-3), probability
-  difference max 1.4e-5, p99 8.7e-6. Requests of 3 or more questions (n = 117): p50 1,594 ms, p95 3,627 ms;
-  GPU memory peak 9.4 GiB (`nvidia-smi`). The CPU execution provider was not run.
+  decision on 589 of 589 questions. Largest slot score difference 1.7e-4 (tolerance 1e-3), probability
+  difference max 1.5e-5, p99 9.6e-6. Requests of 3 or more questions (n = 118): p50 1,613 ms, p95 4,965 ms;
+  GPU memory peak 9.7 GiB (`nvidia-smi`). The CPU execution provider was not run.
 
 ## Quality
 
@@ -158,12 +163,15 @@ the weights at the pinned revisions (the base shards, `tokenizer.json`, `adapter
   |---|---|---|---|
   | noul | 600 | 600 | 0.677 |
   | choice | 600 | 600 | 0.563 |
-  | score | 800 | 0 | none: every score has 4 (700) or 5 (100) levels |
-  | all | 2,000 | 1,200 (coverage 0.60) | 0.620 |
+  | score | 800 | 800 | 0.530 |
+  | all | 2,000 | 2,000 (coverage 1.0) | 0.584 |
 
-  The fixed head answers a score only with exactly 6 levels, so no typed-decisions score question is answered
-  and Ollaya rejects such requests (422). Accuracy is over the answered questions only. Fitting one
-  temperature per type on half the rows does not change it materially (0.628 and 0.612 on the other half).
+  The fixed head answers a score of exactly 6 levels with the trained digit block, and a score of any other
+  number of levels as a choice over the rendered level labels (the same choice template with `render(level)` as
+  option text). The typed-decisions scores have 4 or 5 levels, so all 800 are answered via the choice framing.
+  Score accuracy (0.530) is above the majority-class baseline (0.338) but below noul and choice, as the model
+  was not trained on this framing. Fitting one temperature per type on half the rows does not change the overall
+  number materially (0.587 and 0.581 on the other half).
 - **Published benchmarks** (measured on an NVIDIA T4 with the training prompt, one row at a time, not through
   Ollaya). The model card numbers come from the 4-bit base the adapter was trained on. The same adapter and head
   were then run on the same rows with the unquantized base (fp32 compute, the way Ollaya runs it):
@@ -180,9 +188,10 @@ the weights at the pinned revisions (the base shards, `tokenizer.json`, `adapter
 
 ## Limits
 
-- **Options.** Choices of 1..16 options, scores of exactly 6 levels (0..5).
+- **Options.** Choices of 1..16 options; scores of exactly 6 levels use the trained digit block, other level
+  counts (1..16) are expressed as choices.
 - **Rows.** Up to 8,192 tokens per question, the whole state included; the model was trained on up to 768.
-- **Memory.** About 8 GB of weights kept BF16; the CUDA parity run peaked at 9.4 GiB on a T4.
+- **Memory.** About 8 GB of weights kept BF16; the CUDA parity run peaked at 9.7 GiB on a T4.
 
 ## License and attribution
 
