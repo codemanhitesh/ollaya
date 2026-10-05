@@ -10,7 +10,7 @@ match to ~1e-5), in the same metrics as the llm-logits demo, for a like-for-like
 
 Writes <model_dir>/typed-decisions-quality.json (as shipped = the model's calibration.json, plus the
 cross-fitted per-type temperatures) and typed-decisions-logits.jsonl. A question the model cannot answer (arbiter:
-a score with other than 6 levels, a choice over 16 options) has no logits and is left out of the metrics;
+a choice over 16 options or a score over 16 levels) has no logits and is left out of the metrics;
 "questions" and "answered" give the coverage.
 """
 from __future__ import annotations

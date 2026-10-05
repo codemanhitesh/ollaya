@@ -8,7 +8,9 @@ the model repository holds the adapter, `head.pt` (the EMA-averaged head, BF16) 
 **Reference prompt.** The three templates below are copied verbatim from the training script, and a prompt
 is tokenized the way training tokenizes it: transformers' tokenizer of the base repository with its
 defaults, which put `<bos>` in front. The training data was text, so the request -> (state, question,
-options) texts are Ollaya's (`layout.to_record`: `render` and the option texts), shared with the port.
+options) texts are Ollaya's (`layout.to_record`: `render` and the option texts), shared with the port. Training
+saw 6-level scores only; a score with another number of levels goes through the choice template with its
+rendered levels as the options (Ollaya's framing, not the training script's).
 The port (`layout.ArbiterLayout`) instead fills the template with plain string formatting and tokenizes
 with HF `tokenizers`, as the Rust runtime does; `check.py` compares the two id for id.
 
@@ -114,7 +116,7 @@ def encode(tok, state, questions):
     for (t, instructions, options), m in zip(qs, meta):
         if t == "noul":
             prompt = _make_noul_prompt(state_text, instructions)
-        elif t == "choice":
+        elif t == "choice" or options:   # a score of other than 6 levels is asked as a choice over its levels
             prompt = _make_choice_prompt(state_text, instructions, options)
         else:
             prompt = _make_score_prompt(state_text, instructions)
@@ -122,7 +124,7 @@ def encode(tok, state, questions):
         if len(ids) > MAX_ROW_TOKENS:
             raise RequestError("question %r: the row is %d tokens; this model reads up to %d"
                                % (m["qid"], len(ids), MAX_ROW_TOKENS))
-        rows.append({"ids": ids, "last_pos": len(ids) - 1, "slots": slots(t, m["k"])})
+        rows.append({"ids": ids, "last_pos": len(ids) - 1, "slots": slots("choice" if options else t, m["k"])})
     return rows, meta
 
 

@@ -27,9 +27,9 @@ _UPSET = {"type": "score", "instructions": "How upset is the customer?",
           "criteria": ["calm", "mild", "annoyed", "upset", "angry", "furious"]}
 _INTENTS = {"type": "choice", "instructions": "Which intent best matches the message?",
             "criteria": {"intent_%02d" % i: "customer intent number %d" % i for i in range(16)}}
-# The shared set has no score with 6 levels and no choice with 16 options, so these cover the head's edges
-# and the two rejections of the fixed head (17 options, 5 levels); the long state crosses the 1,024-token
-# sliding window.
+# The shared set has no score with 6 levels and no choice with 16 options, so these cover the head's edges:
+# a 6-level score (the trained digit block), scores of 2 and 16 levels (asked as a choice), and the two
+# rejections of the fixed head (17 options, 17 levels); the long state crosses the 1,024-token sliding window.
 EXTRA = [
     ("arbiter/score_6", "Third failed call today. Nobody listens and I am done waiting.", {"upset": _UPSET}),
     ("arbiter/choice_16", "I want to change the shipping address of order A-104.", {"intent": _INTENTS}),
@@ -44,9 +44,13 @@ EXTRA = [
     ("arbiter/choice_17_rejected", "I want to change my address.",
      {"ok": {"type": "noul", "instructions": "Is the message polite?"},
       "intent": {**_INTENTS, "criteria": {**_INTENTS["criteria"], "intent_16": "one more"}}}),
-    ("arbiter/score_5_rejected", "Third failed call today.",
+    ("arbiter/score_2_and_16", "Third failed call today.",
      {"ok": {"type": "noul", "instructions": "Is the message polite?"},
-      "upset": {**_UPSET, "criteria": _UPSET["criteria"][:5]}}),
+      "upset": {**_UPSET, "criteria": ["calm", "upset"]},
+      "fine": {**_UPSET, "criteria": ["level %d of 16" % i for i in range(16)]}}),
+    ("arbiter/score_17_rejected", "Third failed call today.",
+     {"ok": {"type": "noul", "instructions": "Is the message polite?"},
+      "upset": {**_UPSET, "criteria": ["level %d of 17" % i for i in range(17)]}}),
 ]
 
 

@@ -10,21 +10,25 @@ One causal row per question, the training prompt with Gemma's `<bos>` in front:
 
     block   noul    "T. Yes / True\\nF. No / False"
             choice  "A. {option 0}\\nB. {option 1}\\n..."     (1..16 options, letters A..P)
-            score   "0\\n1\\n2\\n3\\n4\\n5"                   (exactly 6 levels)
+            score   "0\\n1\\n2\\n3\\n4\\n5"                   (exactly 6 levels: the trained block)
+            score   "A. {level 0}\\nB. {level 1}\\n..."       (any other count, 1..16: asked as a choice)
 
 `state` and `instructions` are `render(...)` of the JSON values; a choice option is `name` or
-`name: render(description)`. The noul descriptions and the score level descriptions are not part of the
-prompt: the model was trained on the fixed blocks above.
+`name: render(description)`. The noul descriptions are not part of the prompt, nor are a 6-level score's level
+descriptions: the model was trained on the fixed blocks above, and on 6-level scores only. A score with any
+other number of levels is asked as a choice over its levels in order (`render(level)`), a framing the model
+was not trained for.
 
 The graph returns 24 raw slot scores per row. A question's option logits are the scores at its slots, in
 Ollaya's option order:
 
     noul    [1, 0]           false = F (slot 1), true = T (slot 0)
     choice  [2, ..., 1 + k]  option j = letter j (A..P)
-    score   [18, ..., 23]    level j = digit j (0..5)
+    score   [18, ..., 23]    level j = digit j (0..5), 6 levels
+            [2, ..., 1 + k]  level j = letter j (A..P), any other k
 
 Requests the fixed head cannot answer are rejected (HTTP 422), never truncated: a choice with more than 16
-options, a score with other than 6 levels, a row over `max_row_tokens`.
+options, a score with more than 16 levels, a row over `max_row_tokens`.
 """
 from __future__ import annotations
 
@@ -72,8 +76,8 @@ def option_text(name: str, desc) -> str:
 
 def to_record(state, questions: Dict[str, Any]) -> Tuple[str, List[Tuple[str, str, List[str]]], List[Dict[str, Any]]]:
     """Validate the request and render its texts: -> (state_text, [(qtype, instructions, options)], meta).
-    `options` are the texts a choice lists (empty for noul and score, whose blocks are fixed); meta[q]["k"]
-    is the number of option logits."""
+    `options` are the texts a choice block lists: a choice's options or a score's levels (empty for noul and a
+    6-level score, whose blocks are fixed); meta[q]["k"] is the number of option logits."""
     if not isinstance(questions, dict) or not questions:
         raise LayoutError("questions must contain at least one question")
     qs, meta = [], []
@@ -96,9 +100,13 @@ def to_record(state, questions: Dict[str, Any]) -> Tuple[str, List[Tuple[str, st
             opts = [option_text(name, d) for name, d in crit.items()]
             k = len(opts)
         elif t == "score":
-            if not isinstance(crit, list) or len(crit) != SCORE_LEVELS:
-                raise LayoutError("question %r: score criteria must be a list of exactly %d levels" % (qid, SCORE_LEVELS))
-            opts, k = [], SCORE_LEVELS
+            if not isinstance(crit, list) or not crit:
+                raise LayoutError("question %r: score criteria must be a non-empty list of levels" % qid)
+            if len(crit) > MAX_CHOICE:
+                raise LayoutError("question %r: %d levels; this model answers at most %d" % (qid, len(crit), MAX_CHOICE))
+            # 6 levels: the trained digit block (no level texts); any other count: a choice over the levels
+            opts = [] if len(crit) == SCORE_LEVELS else [render(x) for x in crit]
+            k = len(crit)
         else:
             raise LayoutError("question %r: unknown type %r" % (qid, t))
         qs.append((t, render(q.get("instructions")), opts))
@@ -109,7 +117,7 @@ def to_record(state, questions: Dict[str, Any]) -> Tuple[str, List[Tuple[str, st
 def options_block(qtype: str, options: List[str]) -> str:
     if qtype == "noul":
         return NOUL_BLOCK
-    if qtype == "score":
+    if qtype == "score" and not options:
         return SCORE_BLOCK
     return "\n".join("%s. %s" % (CHOICE_LETTERS[i], o) for i, o in enumerate(options))
 
@@ -154,5 +162,6 @@ class ArbiterLayout:
             if len(ids) > self.max_row:
                 raise LayoutError("question %r: the row is %d tokens; this model reads up to %d"
                                   % (m["qid"], len(ids), self.max_row))
-            rows.append({"ids": ids, "last_pos": len(ids) - 1, "slots": self.slots[t][:m["k"]]})
+            sl = self.slots["choice" if opts else t]   # a score asked as a choice reads the choice slots
+            rows.append({"ids": ids, "last_pos": len(ids) - 1, "slots": sl[:m["k"]]})
         return rows, meta

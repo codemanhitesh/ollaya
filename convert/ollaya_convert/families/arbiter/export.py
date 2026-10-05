@@ -140,13 +140,15 @@ def export(slug, out_dir, run_dir, base_dir):
             "noul_block": "T. Yes / True\nF. No / False",
             "choice_block": "{letter}. {option}, one line per option, letters A..P",
             "choice_option": "{name} | {name}: {render(description)}",
-            "score_block": "0\n1\n2\n3\n4\n5",
+            "score_block": "0\n1\n2\n3\n4\n5 for exactly 6 levels; any other count (1..16): the choice block over "
+                           "render(level), letters A.. in level order",
             "render": "None->'', scalars->Python str(), list->'- item' lines, dict->'key: value' lines, 2-space nesting",
             "add_special_tokens": False,
         },
         "option_logits": {"noul": "scores[row, [1, 0]] (false = F, true = T)",
                           "choice": "scores[row, 2 + j] for option j < 16",
-                          "score": "scores[row, 18 + level] for level < 6"},
+                          "score": "scores[row, 18 + level] for 6 levels, else scores[row, 2 + level] for "
+                                   "up to 16 levels"},
         "opset": ox.OPSET,
         "precision": "fp32 compute; base weights and head BF16, widened by Cast (at load, or per forward pass with "
                      "weights_in_memory bf16); adapter F32",

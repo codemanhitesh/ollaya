@@ -337,7 +337,8 @@ CATALOG = {
             # The tokenizer is the base's: the arbiter repository's tokenizer.json has truncation (255) on.
             "4b": dict(_wl("arbiter-4b", "hiteshluke/arbiter-4b", "0c44271c59f89758e3cae17b032e98a9140093e9",
                            "Arbiter v3.3: a LoRA and a fixed 24-slot head on Gemma 3 4B, one forward pass per "
-                           "question. Answers noul, choices of up to 16 options and scores of exactly 6 levels.",
+                           "question. Answers noul, choices of up to 16 options and scores (6 levels as trained, other "
+                           "level counts asked as a choice over the levels).",
                            "4.3B", 8192, ["multilingual"], license=ARBITER_LICENSE,
                            wl_dir=os.path.join(OUT, "arbiter-4b"),
                            license_text=_arbiter_license("hiteshluke/arbiter-4b", "gemma-3-4b-it"),
