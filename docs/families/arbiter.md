@@ -1,161 +1,160 @@
 # arbiter (`arbiter-fixed-v1`)
 
-Arbiter is Codekins Pvt Ltd / Zyot Lab's 4B decision model. It is built from three parts:
+**Arbiter v3.3** ([hiteshluke/arbiter-4b](https://huggingface.co/hiteshluke/arbiter-4b), by Codekins Pvt Ltd ·
+Zyot Lab) is Gemma 3 4B IT with a LoRA (r 16, α 32, on q/k/v/o and gate/up/down) and a **fixed 24-slot head**,
+`nn.Linear(2560, 24, bias=False)`, read at the last position of the prompt. The head's rows started as the base
+LM head's rows for the 24 answer tokens and were trained with the LoRA; the checkpoint ships the average of the
+last five evaluation heads (BF16, `head.pt`). One forward pass answers one question. Training code:
+`training_v3_6/train.py` in [CodekinsTech/arbiter](https://github.com/CodekinsTech/arbiter) at `e1cb30fd`.
 
-- a LoRA adapter (r=16, α=32, dropout=0.05) on `unsloth/gemma-3-4b-it`;
-- a **fixed 24-slot pointer head**: `nn.Linear(2560, 24)` read at the final-position hidden state of
-  the prompt, initialized from the base LM-head verbalizer rows for the 24 answer tokens and trained
-  jointly with the LoRA (EMA-averaged over the last 5 eval checkpoints);
-- the standard arbiter prompt template (`State: / Question: / Options: / Answer:`), identical to training.
-
-The model repository `hiteshluke/arbiter-4b` holds the adapter, `head.pt` and the tokenizer. The base
-weights come unmodified from `unsloth/gemma-3-4b-it`. The inference code lives inline under
-`convert/ollaya_convert/families/arbiter/` (no external `arbiter` python package).
-
-| Model | Checkpoint | Base (license) | Temperature | Status in Ollaya |
-|---|---|---|---|---|
-| `hiteshluke/arbiter-4b` | v3.3 (`0c44271c59f89758e3cae17b032e98a9140093e9`) | `unsloth/gemma-3-4b-it` @ `bf46152c47f5dd20b896357cb51abc4c03b8ee8c` (Gemma Terms of Use), 2 shards | 1.0 | **converted, ONNX** (weights stay BF16 in memory) |
-
-## Recommended engine: ONNX (single forward)
-
-- **Why ONNX.** A decision is one causal row per question plus a fixed 24-slot `Linear(2560, 24)` head.
-  The head is not the LM head, so llama.cpp could not produce these scores without custom code; ONNX
-  runs the head directly.
-- **LoRA.** It is **not merged**. Each adapted Linear runs as `x·Wᵀ + (α/r)·(x·Aᵀ)·Bᵀ`, so base and
-  adapter weights both stay byte-referenced in the weightless export.
-- **Numerics.** Merged vs unmerged differ by at most ≈1e-6 on the slot scores (fp32 compute, BF16 base
-  weights widened per forward pass).
-
-## Architecture: 24-slot pointer head
-
-The head's output tensor has a fixed size of 24; a question's valid slots are picked by type:
-
-| Slot(s) | Verbalizer | Used by |
+| Tag | Weights | Temperature |
 |---|---|---|
-| 0 | `T` | noul (true) |
-| 1 | `F` | noul (false) |
-| 2..17 | `A`..`P` | choice (option index 0..15) |
-| 18..23 | `0`..`5` | score (level 0..5) |
+| `arbiter:4b`, `arbiter:latest` | `unsloth/gemma-3-4b-it@bf46152c`: two BF16 shards and `tokenizer.json`; `hiteshluke/arbiter-4b@0c44271c`: `adapter_model.safetensors` (F32) and `head.pt` | 1.0 (none fitted) |
 
-The 24 verbalizer tokens include two independent `F`s: slot 1 is the `F` in `T/F`, slot 7 is the `F`
-in `A..P`. They tokenize to the same base-model id; the slot order is what distinguishes them, so each
-is resolved by tokenizing the single character at the correct index.
+The head has three fixed slot ranges, so a question has at most 16 options (choice) and a score exactly 6 levels:
 
-The 24 head rows are initialized from the base LM-head rows for these 24 token ids, then trained
-jointly with the LoRA. Slots 0 (`T`) and 1 (`F`) have their gradient frozen during training so the
-noul primitive matches the LM head's own calibration on the true/false tokens. The checkpoint ships
-the EMA average of the last 5 eval heads.
+| Slots | Tokens | Read for |
+|---|---|---|
+| 0, 1 | `T`, `F` | noul: option logits `[F, T]` (Ollaya's order: false, true) |
+| 2..17 | `A`..`P` | choice: option j at slot 2 + j |
+| 18..23 | `0`..`5` | score: level j at slot 18 + j |
 
-## Files (nothing re-hosted)
+### Base repository
 
-| Layer | Source |
-|---|---|
-| `model.onnx` (graph) | derived, hosted by Ollaya |
-| base weights, BF16 | `unsloth/gemma-3-4b-it`'s `model-0000i-of-00002.safetensors` shards at the pinned revision (≈8.6 GB total). The vision tower tensors are unused. |
-| LoRA adapter, F32 | the arbiter repo's `adapter_model.safetensors` |
-| 24-slot head, F32 | same repo, `head.pt`. A `torch.save` zip whose tensors are stored uncompressed, so the graph references them **by byte offset inside the zip**. Nothing is re-packed. |
-| `tokenizer.json` | same repo, used as-is (the Gemma 3 tokenizer) |
-| `decision.json`, `calibration.json` | derived, hosted by Ollaya |
-| license | Apache-2.0 (adapter + head). The base has its own Gemma Terms of Use. |
+`unsloth/gemma-3-4b-it@bf46152c` is a copy of Google's `google/gemma-3-4b-it@093f9f38`. The Hub reports the same
+LFS sha256 and size for every file the runtime reads:
 
-- **Mapping.** Every base tensor of the language model, every adapter tensor and the two head tensors
-  map to graph initializers; the base's are a `Cast` from BF16, the rest F32.
-- **Weights in memory.** `decision.json` `weights_in_memory` is `bf16` (kept as stored, widened per
-  forward pass).
-- **Hashes.** sha256 values are in each export's `files.json` (`convert/out/arbiter-4b`).
+| File | sha256 | Bytes |
+|---|---|---|
+| `model-00001-of-00002.safetensors` | `eb5fd5e97ddd07b56778733e9653c07312529cb00980a318fc3e1c4e3b5a8f1f` | 4,961,251,752 |
+| `model-00002-of-00002.safetensors` | `fdde0e5aa5ced0fa203b3d50f4ab78168b7e3a3e08c6349f5cc9326666e1bb13` | 3,639,026,128 |
+| `tokenizer.json` | `4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795` | 33,384,568 |
 
-## Request → rows
+`model.safetensors.index.json` and `tokenizer.model` are identical too. Only metadata differs (`config.json`,
+`generation_config.json`, `tokenizer_config.json`, `special_tokens_map.json`, the README, and the copy's extra
+`chat_template.jinja`), and the runtime reads none of it. The manifest points at the copy because
+`google/gemma-3-4b-it` is gated (the Hub lists it as `gated: manual`: each account must request access and accept
+the Gemma terms before it can download), and Ollaya pulls without a Hugging Face token. It is also the name the
+training script loads the base and the tokenizer by.
 
-Source: `convert/ollaya_convert/families/arbiter/layout.py` (`ArbiterLayout.encode`).
+The tokenizer comes from the base repository, not from `hiteshluke/arbiter-4b`: that repository's `tokenizer.json`
+(sha256 `b666c93e…`) is the same tokenizer with truncation to 255 tokens switched on.
 
-### Validation
+## Sequence
 
-Failures are HTTP 422.
+`convert/ollaya_convert/families/arbiter/layout.py` (the port) and `crates/ollaya-decision/src/arbiter.rs`. One
+causal row per question, the training prompt after Gemma's `<bos>`:
 
-- `questions` needs at least one entry.
-- `type` must be one of `noul`, `choice`, `score`.
-- **noul.** `criteria` is an object or null (unused: the two options are always `Yes / True` and `No / False`).
-- **choice.** `criteria` is an object of **1..16** entries.
-- **score.** `criteria` is a list of exactly **6** entries (one description per level, 0..5).
-- **instructions.** Optional; any JSON (rendered to text).
+```text
+ids = [<bos>] + tok("State: {render(state)}\n\nQuestion: {render(instructions)}\n\nOptions:\n{block}\n\nAnswer:")
 
-### Text rendering (`render`)
-
-- `None` renders as `""`.
-- A str, int, float or bool renders as Python `str(v)`: `True`, `1.0`, `1e-05`.
-- A list renders as `"\n".join(f"{pad}- {render(x, indent+1).lstrip()}")`.
-- A dict renders as `"\n".join(f"{pad}{k}:\n{render(x, indent+1)}" if dict/list else f"{pad}{k}: {render(x)}")`.
-- `pad = "  " * indent`.
-
-### Prompt format
-
-Each row is the following text, tokenized with the base tokenizer (`add_special_tokens=False`):
-
-```
-State: {render(state)}
-
-Question: {render(instructions)}
-
-Options:
-{options block}
-
-Answer:
+block   noul    "T. Yes / True\nF. No / False"
+        choice  "A. {option 0}\nB. {option 1}\n..."      one line per option, letters A..P
+        score   "0\n1\n2\n3\n4\n5"
 ```
 
-Options block by primitive:
+- `render`: `null` is `""`, a scalar is Python's `str()` (`True`, `1.0`, `1e-05`), a list is `- item` lines and an
+  object `key: value` lines, two spaces per level. A choice option is `name`, or `name: render(description)`.
+- The noul and score descriptions are not part of the prompt: the model was trained on the fixed blocks.
+- The head reads the last position (`last_pos = len(ids) - 1`).
+- **Rejected (422), never truncated:** a choice whose criteria are not an object, or hold more than 16 options
+  (`TOO_MANY_OPTIONS`); a score with other than 6 levels; a row over 8,192 tokens. A request with one such
+  question is rejected whole, like any invalid request.
 
-| Type | Options block |
-|---|---|
-| noul | `T. Yes / True\nF. No / False` |
-| choice | `A. {opt0}\nB. {opt1}\n...` (one letter per option, A..P) |
-| score | `0\n1\n2\n3\n4\n5` |
+The reference prompt (`ref.py`) is the training script's three prompt functions, copied verbatim, tokenized by
+transformers as training tokenizes (`tok(prompt)`, which adds `<bos>`). The request -> text mapping (`render`,
+option texts, validation) is Ollaya's, shared by both: the training data was plain text.
 
-The row's last position is where the pointer head is read. There are no delimiter tokens: the layout
-is just the tokenized prompt, right-padded for batching.
+## Graph
 
-### Option logits
-
-- **noul.** `scores[row, 0]` is the true-slot score, `scores[row, 1]` is false.
-- **choice.** `scores[row, 2 + option_index]` for `option_index in 0..k-1`.
-- **score.** `scores[row, 18 + level]` for `level in 0..5`.
-- **Calibration.** `calibration.json` ships `temperature = [1.0, 1.0, 1.0]`; no fitted temperature is
-  applied in v3.3.
-
-## ONNX contract
-
-| Tensor | dtype | shape | meaning |
+| Tensor | dtype | Shape | |
 |---|---|---|---|
-| `input_ids` | int64 | `[rows, seq]` | one row per question; **`seq` a multiple of 64**; right-pad with any id (`pad`) |
-| `last_pos` | int64 | `[rows]` | index of the final valid token in each row (where the head is read) |
-| `scores` | float32 | `[rows, 24]` | raw 24-slot pointer scores; the server masks to the row's valid slots by type |
+| `input_ids` | int64 | `[rows, seq]` | one row per question, right-padded; `seq` a multiple of 64 |
+| `last_pos` | int64 | `[rows]` | the row's last token |
+| `scores` | float32 | `[rows, 24]` | the head's raw slot scores at `last_pos` |
 
-- **Positions and masking.** Positions are implicit (`0..seq-1`). An attention mask is derived inside
-  the graph from `last_pos` (positions ≤ `last_pos[row]` attend).
-- **Precision.** fp32 compute on BF16 base weights.
+`export.py`: transformers' Gemma 3 text model recomputed by `llm_common/gemma3.py` (positions `0..seq-1`, no mask
+input: every layer is causal, and the sliding layers see the last 1,024 positions), the LoRA unmerged
+(`x·Wᵀ + 2·(x·Aᵀ)·Bᵀ`), and the head. Weightless: the base shards, the adapter and the head tensor inside
+`head.pt` are referenced by byte offset; nothing is re-hosted. The vision tower and its LoRA tensors are unused.
+`weights_in_memory` is `bf16`, about 8 GB. The runner (`crates/ollaya-runner/src/arbiter.rs`) batches rows
+shortest first under 8,192 padded tokens per `session.run` and returns the scores at each question's slots.
 
-## Measured accuracy
+## Differences from upstream
 
-Arbiter v3.3 at ship time:
+- **Precision.** Training and the published benchmarks ran the base 4-bit (NF4, bitsandbytes) with BF16 compute;
+  the adapter was trained against that 4-bit base (`unsloth/gemma-3-4b-it-unsloth-bnb-4bit`). Ollaya runs the
+  unquantized BF16 base in fp32, as does the reference here.
+- **Length.** Training cut prompts at 768 tokens and the benchmark script at 1,024 (from the right, which drops
+  `Answer:`). Ollaya reads rows of up to 8,192 tokens whole and rejects longer ones.
+- **Requests.** Training saw text; JSON states and instructions go through `render` above. Gemma's control tokens
+  written in user text (`<start_of_turn>`, `<bos>`) are tokenized as control tokens, as in training.
+- **Fixed head.** Choices over 16 options and scores with other than 6 levels are rejected, not truncated or
+  rescaled.
+- **Temperature.** The checkpoint has no fitted temperature; `calibration.json` ships 1.0 for every type.
 
-| Benchmark | Accuracy | n |
-|---|---|---|
-| BoolQ (dev) | 0.849 | 1,000 |
-| ARC-Challenge (test) | 0.738 | 500 |
-| CommonsenseQA (dev) | 0.706 | 500 |
-| OpenBookQA (test) | 0.722 | 500 |
+## Parity
 
-## Measured parity
+The shared request set (the edge cases and 40 typed-decisions rows, as JSONL), plus six arbiter cases in
+`check.py` (`EXTRA`): the shared set has no 6-level score and no 16-option choice, so these add both, a long state
+past the sliding window, and the two rejections of the fixed head.
 
-`families/arbiter/parity.py`: ONNX Runtime CPU with the LoRA unmerged, against the inline fp32 reference
-(`ref.load(dtype=fp32, merge=True)`). Tolerance: max |Δ slot score| < 1e-4; 100 % argmax agreement.
-Numbers are filled in once a maintainer with GPU runs the export against the pinned revisions and
-drops the resulting `model.onnx` sha256 into both manifests.
+- **Prompt** (`check.py`, no model needed): the port against the reference prompt, id for id, on the base's
+  tokenizer. Measured 2026-10-05 with transformers 4.57.6 and 5.17.0: 127 requests, 6 accepted whole and 121
+  rejected by both, 420 rows identical (every question of a rejected request is also compared on its own), 0
+  mismatches.
+- **Goldens** (`goldens.py`): the reference model in fp32 (LoRA merged, TF32 off, one unpadded row at a time):
+  token ids, last position and slots, all 24 slot scores, option logits and probabilities per question.
+- **Export** (`parity.py`): ONNX Runtime (LoRA unmerged, rows batched) against the reference.
+- **Runtime** (`crates/ollaya-runner/examples/parity_arbiter.rs`): identical rows and rejections, every decision
+  the same, all 24 slot scores within 1e-3.
 
-## Attribution
+```sh
+cd convert
+uv run --no-project --with transformers==4.57.6 --with numpy \
+    python -m ollaya_convert.families.arbiter.check BASE --requests shared.jsonl
+uv run --with peft==0.19.1 --with transformers==4.57.6 \
+    python -m ollaya_convert.families.arbiter.export arbiter-4b --out out/arbiter-4b
+uv run --with peft==0.19.1 --with transformers==4.57.6 \
+    python -m ollaya_convert.families.arbiter.goldens out/arbiter-4b --requests shared.jsonl
+uv run --with peft==0.19.1 --with transformers==4.57.6 \
+    python -m ollaya_convert.families.arbiter.parity out/arbiter-4b --requests shared.jsonl
+cd .. && cargo run --release -p ollaya-runner --example parity_arbiter -- \
+    convert/out/arbiter-4b convert/out/goldens-arbiter-4b.jsonl cuda
+```
 
-- **Arbiter** (LoRA adapter + 24-slot pointer head) by Codekins Pvt Ltd / Zyot Lab, Apache-2.0.
-- **Base model**: Gemma 3 4B IT by Google DeepMind
-  (<https://huggingface.co/google/gemma-3-4b-it>), under the Gemma Terms of Use.
-- **Training data**: `SargeDev/jev-distill-corpus-v3`
-  (<https://huggingface.co/datasets/SargeDev/jev-distill-corpus-v3>); see the dataset card for its own
-  licensing.
+The export, the goldens and both parity runs need the weights and a GPU, and have not been run yet: no numbers.
+
+## Quality
+
+- **Typed-decisions** (all 400 test states, argmax against the majority label): **not measured yet (TODO).**
+  `python -m ollaya_convert.families.llm_common.eval_refs arbiter arbiter-4b out/arbiter-4b` computes it from the
+  fp32 reference; report it with its coverage (`answered` of `questions` in the output). The fixed head cannot
+  answer every question: in the shared set's 40 typed-decisions rows, all 80 score questions have 4 or 5 levels.
+- **Published benchmarks** (the model card; measured on an NVIDIA T4 with the 4-bit base, the training prompt,
+  not through Ollaya):
+
+| Benchmark | Type | Accuracy | n |
+|---|---|---|---|
+| BoolQ (validation) | noul | 0.849 | 1,000 |
+| ARC-Challenge (test) | 4-way choice | 0.738 | 500 |
+| CommonsenseQA (validation) | 5-way choice | 0.706 | 500 |
+| OpenBookQA (test) | 4-way choice | 0.722 | 500 |
+
+## Limits
+
+- **Options.** Choices of 1..16 options, scores of exactly 6 levels (0..5).
+- **Rows.** Up to 8,192 tokens per question, the whole state included; the model was trained on up to 768.
+- **Memory.** About 8 GB with the weights kept BF16.
+
+## License and attribution
+
+- **Arbiter** (the LoRA adapter and the 24-slot head): Apache-2.0, by Codekins Pvt Ltd · Zyot Lab.
+- **Base model:** Gemma 3 4B IT by Google DeepMind (https://huggingface.co/google/gemma-3-4b-it), under the
+  [Gemma Terms of Use](https://ai.google.dev/gemma/terms) and the
+  [Gemma Prohibited Use Policy](https://ai.google.dev/gemma/prohibited_use_policy). Ollaya fetches the weights
+  unmodified and does not redistribute them.
+- The catalog's `license` field says both: "Apache-2.0 (LoRA adapter and head) and the Gemma Terms of Use (Gemma 3
+  base model)", and the license layer carries the Gemma notice.
+- **Training data:** mainly [SargeDev/jev-distill-corpus-v3](https://huggingface.co/datasets/SargeDev/jev-distill-corpus-v3);
+  see the dataset card for its license.

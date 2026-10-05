@@ -100,11 +100,17 @@ def _arbiter_weights(base, base_commit, shards):
             "head.pt": "head.pt"}
 
 
+ARBITER_LICENSE = "Apache-2.0 (LoRA adapter and head) and the Gemma Terms of Use (Gemma 3 base model)"
+
+
 def _arbiter_license(repo, base):
     return ("Arbiter by Codekins Pvt Ltd · Zyot Lab (https://huggingface.co/%s)\n"
             "LoRA adapter and 24-slot pointer head: Apache-2.0.\n"
-            "Base model: %s by Google DeepMind (https://huggingface.co/google/%s), Gemma Terms of Use.\n"
-            "Licensed under the Apache License, Version 2.0.\n\n"
+            "Base model: %s by Google DeepMind (https://huggingface.co/google/%s), under the Gemma Terms of Use "
+            "(https://ai.google.dev/gemma/terms) and the Gemma Prohibited Use Policy "
+            "(https://ai.google.dev/gemma/prohibited_use_policy).\n"
+            "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms.\n"
+            "The adapter and the head are licensed under the Apache License, Version 2.0:\n\n"
             % (repo, base, base)) + LICENSE_APACHE
 
 
@@ -325,15 +331,20 @@ CATALOG = {
         "model": "arbiter",
         "family": "arbiter",
         "author": "Codekins Pvt Ltd · Zyot Lab",
-        "license": "Apache-2.0",
+        "license": ARBITER_LICENSE,
         "license_text": _arbiter_license("hiteshluke/arbiter-4b", "gemma-3-4b-it"),
         "tags": {
-            "4b": _wl("arbiter-4b", "hiteshluke/arbiter-4b", "0c44271c59f89758e3cae17b032e98a9140093e9",
-                      "Arbiter v3.3: LoRA + 24-slot pointer head on Gemma 3 4B. Three decision primitives "
-                      "(noul, choice, score) in one forward pass.",
-                      "4.3B", 8192, ["multilingual"], wl_dir=os.path.join(OUT, "arbiter-4b"),
-                      license_text=_arbiter_license("hiteshluke/arbiter-4b", "gemma-3-4b-it"),
-                      weights=_arbiter_weights("unsloth/gemma-3-4b-it", "bf46152c47f5dd20b896357cb51abc4c03b8ee8c", 2)),
+            # The tokenizer is the base's: the arbiter repository's tokenizer.json has truncation (255) on.
+            "4b": dict(_wl("arbiter-4b", "hiteshluke/arbiter-4b", "0c44271c59f89758e3cae17b032e98a9140093e9",
+                           "Arbiter v3.3: a LoRA and a fixed 24-slot head on Gemma 3 4B, one forward pass per "
+                           "question. Answers noul, choices of up to 16 options and scores of exactly 6 levels.",
+                           "4.3B", 8192, ["multilingual"], license=ARBITER_LICENSE,
+                           wl_dir=os.path.join(OUT, "arbiter-4b"),
+                           license_text=_arbiter_license("hiteshluke/arbiter-4b", "gemma-3-4b-it"),
+                           weights=_arbiter_weights("unsloth/gemma-3-4b-it",
+                                                    "bf46152c47f5dd20b896357cb51abc4c03b8ee8c", 2)),
+                       tokenizer=("unsloth/gemma-3-4b-it", "bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
+                                  "tokenizer.json")),
         },
         "aliases": {"latest": "4b"},
         "parity": "PARITY-PENDING",
