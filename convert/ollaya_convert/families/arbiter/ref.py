@@ -1,29 +1,38 @@
-"""PyTorch reference for hiteshluke/arbiter-4b: an inline implementation of the family (no external
-`arbiter` package).
+"""The PyTorch reference for hiteshluke/arbiter-4b in fp32: the reference prompt and the reference model.
 
-Arbiter is a LoRA on `unsloth/gemma-3-4b-it` plus a fixed `nn.Linear(2560, 24)` pointer head read at
-the final-position hidden state of the prompt. The head's rows are initialized from the base LM-head
-verbalizer rows for the 24 tokens listed in `layout.VERBALIZERS` and jointly trained with the LoRA; the
-checkpoint carries the EMA average of the last 5 eval heads.
+Arbiter is a LoRA (r 16, alpha 32) on `unsloth/gemma-3-4b-it` plus a 24-slot head, `nn.Linear(2560, 24,
+bias=False)`, read at the last position of the prompt's final hidden state (after Gemma's final norm).
+The training script is `training_v3_6/train.py` in https://github.com/CodekinsTech/arbiter (pinned below);
+the model repository holds the adapter, `head.pt` (the EMA-averaged head, BF16) and `head_meta.json`.
 
-    ck, tok, m = ref.load(run_dir, base_dir, device="cuda")
-    enc = ref.encode(tok, m, state, questions)
-    scores = ref.forward(m, enc)        # list of per-row 24-dim slot score vectors
+**Reference prompt.** The three templates below are copied verbatim from the training script, and a prompt
+is tokenized the way training tokenizes it: transformers' tokenizer of the base repository with its
+defaults, which put `<bos>` in front. The training data was text, so the request -> (state, question,
+options) texts are Ollaya's (`layout.to_record`: `render` and the option texts), shared with the port.
+The port (`layout.ArbiterLayout`) instead fills the template with plain string formatting and tokenizes
+with HF `tokenizers`, as the Rust runtime does; `check.py` compares the two id for id.
+
+**Reference model.** transformers' `Gemma3ForConditionalGeneration` in fp32 (eager attention, TF32 off), the
+adapter through peft (merged for the goldens), one unpadded row at a time: the readout is
+`hidden_states[-1][0, -1]`, as in the repository's benchmark script (`training_v3_6/bench.py`).
+
+    tok = ref.tokenizer(base)
+    rows, meta = ref.encode(tok, state, questions)       # reference prompt rows
+    model, head = ref.load(run, base, device="cuda")
+    scores = ref.forward(model, head, rows)               # one [24] array of raw slot scores per row
 """
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
-import torch
-import torch.nn as nn
+import numpy as np
 
-from .layout import ArbiterLayout, VERBALIZERS, NUM_SLOTS
+from .layout import LayoutError, NUM_SLOTS, VERBALIZERS, to_record
 
-HIDDEN_SIZE = 2560
-PAD_FALLBACK = 0
-
+ARBITER_GIT = {"repo": "https://github.com/CodekinsTech/arbiter", "commit": "e1cb30fd3019cf91d2631a2d1004abd858b8e4fa",
+               "script": "training_v3_6/train.py"}
 MODELS = {
     "arbiter-4b": {
         "repo": "hiteshluke/arbiter-4b",
@@ -33,170 +42,144 @@ MODELS = {
         "base_files": ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
     },
 }
+# Ollaya's limit per row (a longer row is rejected). Training truncated prompts at 768 tokens instead.
+MAX_ROW_TOKENS = 8192
 
 
-def snapshot(slug: str) -> Tuple[str, str]:
-    """Resolve local snapshot directories for the checkpoint and the base model."""
+class RequestError(ValueError):
+    """The request is invalid for this model (HTTP 422)."""
+
+
+# ---- verbatim from training_v3_6/train.py (curate_data) ----
+def _make_choice_prompt(state, question, options):
+    letters = [chr(ord('A') + i) for i in range(len(options))]
+    opt_lines = '\n'.join(f'{L}. {o}' for L, o in zip(letters, options))
+    return f'State: {state}\n\nQuestion: {question}\n\nOptions:\n{opt_lines}\n\nAnswer:'
+
+
+def _make_noul_prompt(state, question):
+    return (f'State: {state}\n\nQuestion: {question}\n\n'
+            f'Options:\nT. Yes / True\nF. No / False\n\nAnswer:')
+
+
+def _make_score_prompt(state, question):
+    return (f'State: {state}\n\nQuestion: {question}\n\n'
+            f'Options:\n0\n1\n2\n3\n4\n5\n\nAnswer:')
+
+
+NOUL_SLOTS = [0, 1]                       # T, F
+def choice_slots(n): return list(range(2, 2 + n))
+SCORE_SLOTS = list(range(18, 24))
+# ---- end of the training script's definitions ----
+
+
+def slots(qtype: str, k: int) -> List[int]:
+    """The head slots of a question's option logits, in Ollaya's option order (noul: false, true)."""
+    if qtype == "noul":
+        return [NOUL_SLOTS[1], NOUL_SLOTS[0]]
+    if qtype == "choice":
+        return choice_slots(k)
+    return list(SCORE_SLOTS)
+
+
+def snapshot(slug: str):
+    """Local snapshots of the checkpoint and of the base at their pinned revisions."""
     from huggingface_hub import snapshot_download
 
     m = MODELS[slug]
     run = os.environ.get("ARBITER_RUN") or snapshot_download(m["repo"], revision=m["revision"])
-    base = os.environ.get("ARBITER_BASE") or snapshot_download(m["base"], revision=m["base_revision"])
+    base = os.environ.get("ARBITER_BASE") or snapshot_download(
+        m["base"], revision=m["base_revision"],
+        allow_patterns=["*.json", "*.jinja", "tokenizer.model"] + m["base_files"])
     return run, base
 
 
-def _verbalizer_slot_ids(tok) -> List[int]:
-    """Resolve the 24 verbalizer token ids by tokenizing each character on its own. Slot 1 (F in T/F)
-    and slot 7 (F in A..P) are the same token id; keep both entries so the slot order is preserved."""
-    ids: List[int] = []
-    for ch in VERBALIZERS:
-        enc = tok(ch, add_special_tokens=False)
-        tid = enc["input_ids"] if isinstance(enc, dict) else enc.ids
-        if len(tid) != 1:
-            raise ValueError("verbalizer %r did not tokenize to a single id (got %r)" % (ch, tid))
-        ids.append(int(tid[0]))
-    return ids
-
-
-class ArbiterHead(nn.Module):
-    """Fixed 24-slot pointer head over the final-position hidden state."""
-
-    def __init__(self, hidden_size: int = HIDDEN_SIZE, num_slots: int = NUM_SLOTS):
-        super().__init__()
-        self.proj = nn.Linear(hidden_size, num_slots, bias=True)
-
-    def forward(self, h_last: torch.Tensor) -> torch.Tensor:
-        return self.proj(h_last)
-
-
-class ArbiterModel(nn.Module):
-    """Wraps the Gemma 3 text model + LoRA + the fixed 24-slot head.
-
-    `forward_hidden(ids, attn)` returns `[rows, hidden]`, the last valid position's hidden state per
-    row (indexed by `attn.sum(-1) - 1`).
-    """
-
-    def __init__(self, text_model, head: ArbiterHead):
-        super().__init__()
-        self.text_model = text_model
-        self.head = head
-
-    @torch.no_grad()
-    def forward_hidden(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        out = self.text_model(input_ids=input_ids, attention_mask=attention_mask,
-                              output_hidden_states=True, use_cache=False)
-        h = out.hidden_states[-1] if hasattr(out, "hidden_states") and out.hidden_states is not None \
-            else out.last_hidden_state
-        last = attention_mask.sum(-1) - 1
-        rows = torch.arange(h.shape[0], device=h.device)
-        return h[rows, last].float()
-
-    @torch.no_grad()
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        return self.head(self.forward_hidden(input_ids, attention_mask))
-
-
-class Checkpoint:
-    """Minimal checkpoint descriptor; carries meta plus the resolved base pin for the export check."""
-
-    def __init__(self, run_dir: str):
-        self.run_dir = run_dir
-        self.meta: Dict[str, Any] = {}
-        meta_path = os.path.join(run_dir, "meta.json")
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
-                self.meta = json.load(f)
-        self.upstream_base: Optional[Tuple[str, Optional[str]]] = None
-
-
-def _load_tokenizer(base_dir: str):
+def tokenizer(base_dir: str):
+    """The tokenizer as training loads it (`AutoTokenizer.from_pretrained(BASE_MODEL)`)."""
     from transformers import AutoTokenizer
+
     tok = AutoTokenizer.from_pretrained(base_dir)
     if tok.pad_token_id is None:
-        tok.pad_token_id = tok.eos_token_id if tok.eos_token_id is not None else PAD_FALLBACK
+        tok.pad_token = tok.eos_token
     return tok
 
 
-def _load_base_text_model(base_dir: str, dtype: torch.dtype, device: str):
-    """Load Gemma 3 4B IT in text-only form (we never run the vision tower)."""
-    from transformers import AutoModelForCausalLM
-    model = AutoModelForCausalLM.from_pretrained(base_dir, torch_dtype=dtype)
-    model.to(device)
-    # Gemma 3 4B IT exposes its decoder as model.model; keep the whole causal LM so output_hidden_states works.
-    return model
+def encode(tok, state, questions):
+    """-> (rows, meta): rows[q] = {"ids", "last_pos", "slots"} from the training templates."""
+    try:
+        state_text, qs, meta = to_record(state, questions)
+    except LayoutError as e:
+        raise RequestError(str(e)) from e
+    rows = []
+    for (t, instructions, options), m in zip(qs, meta):
+        if t == "noul":
+            prompt = _make_noul_prompt(state_text, instructions)
+        elif t == "choice":
+            prompt = _make_choice_prompt(state_text, instructions, options)
+        else:
+            prompt = _make_score_prompt(state_text, instructions)
+        ids = list(tok(prompt)["input_ids"])
+        if len(ids) > MAX_ROW_TOKENS:
+            raise RequestError("question %r: the row is %d tokens; this model reads up to %d"
+                               % (m["qid"], len(ids), MAX_ROW_TOKENS))
+        rows.append({"ids": ids, "last_pos": len(ids) - 1, "slots": slots(t, m["k"])})
+    return rows, meta
 
 
-def _wrap_lora(base_model, run_dir: str, merge: bool):
-    from peft import PeftModel
-    peft_model = PeftModel.from_pretrained(base_model, run_dir)
-    if merge:
-        peft_model = peft_model.merge_and_unload()
-    return peft_model
+def head_meta(run_dir: str) -> Dict[str, Any]:
+    with open(os.path.join(run_dir, "head_meta.json")) as f:
+        meta = json.load(f)
+    if meta.get("num_slots") != NUM_SLOTS or meta.get("verbalizer") != VERBALIZERS:
+        raise SystemExit("head_meta.json: %d slots %r, expected %d slots %r"
+                         % (meta.get("num_slots", 0), meta.get("verbalizer"), NUM_SLOTS, VERBALIZERS))
+    return meta
 
 
-def _load_head(run_dir: str, device: str) -> ArbiterHead:
-    head = ArbiterHead()
-    head_path = os.path.join(run_dir, "head.pt")
-    state = torch.load(head_path, map_location="cpu", weights_only=False)
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-    # Accept either {'proj.weight', 'proj.bias'} or raw {'weight', 'bias'}.
-    sd = {}
-    for k, v in state.items():
-        if k.startswith("proj."):
-            sd[k] = v
-        elif k in ("weight", "bias"):
-            sd["proj." + k] = v
-    head.load_state_dict(sd)
-    head.to(device).eval()
-    for p in head.parameters():
-        p.requires_grad_(False)
-    return head
+def text_model(conditional_generation):
+    """The Gemma 3 text decoder (`Gemma3TextModel`) inside `Gemma3ForConditionalGeneration`."""
+    inner = getattr(conditional_generation, "model", None)
+    lm = getattr(inner, "language_model", None)
+    if lm is None:
+        raise SystemExit("unexpected Gemma 3 layout in this transformers version: no model.language_model")
+    return lm
 
 
 def load(run_dir: str, base_dir: str, device: str = "cpu", merge: bool = True):
-    """Load tokenizer + Gemma 3 text model + LoRA + 24-slot head in fp32. Returns (ck, tok, m)."""
+    """Gemma 3 4B IT + the adapter (peft) + the 24-slot head, all fp32. Returns (model, head); `model` is the
+    peft model (merged into a plain `Gemma3ForConditionalGeneration` when `merge`)."""
+    import torch
+    from peft import PeftModel
+    from transformers import Gemma3ForConditionalGeneration
+
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    ck = Checkpoint(run_dir)
-    ck.upstream_base = (ck.meta.get("base", "unsloth/gemma-3-4b-it"),
-                        ck.meta.get("base_revision"))
-    tok = _load_tokenizer(base_dir)
-    base = _load_base_text_model(base_dir, dtype=torch.float32, device=device)
-    peft = _wrap_lora(base, run_dir, merge=merge)
-    head = _load_head(run_dir, device=device)
-    m = ArbiterModel(peft, head).to(device).eval()
-    return ck, tok, m
+    head_meta(run_dir)
+    base = Gemma3ForConditionalGeneration.from_pretrained(base_dir, torch_dtype=torch.float32,
+                                                          attn_implementation="eager")
+    model = PeftModel.from_pretrained(base, run_dir)
+    if merge:
+        model = model.merge_and_unload()
+    model.to(device).eval()
+
+    head = torch.nn.Linear(base.config.text_config.hidden_size, NUM_SLOTS, bias=False)   # 2560
+    state = torch.load(os.path.join(run_dir, "head.pt"), map_location="cpu", weights_only=True)
+    head.load_state_dict({"weight": state["proj.weight"].float()})
+    head.to(device).eval()
+    for p in list(model.parameters()) + list(head.parameters()):
+        p.requires_grad_(False)
+    return model, head
 
 
-def encode(tok, m: ArbiterModel, state, questions):
-    """-> (enc, meta). `enc` is a dict with batched tensors ready for forward_hidden."""
-    decision = {"max_state_tokens": 8192, "max_row_tokens": 8192}
-    lay = ArbiterLayout(tok, decision)
-    row_dicts, meta = lay.encode(state, questions)
-    pad_id = tok.pad_token_id if tok.pad_token_id is not None else PAD_FALLBACK
-    T = max(len(r["ids"]) for r in row_dicts)
-    R = len(row_dicts)
-    ids = torch.full((R, T), pad_id, dtype=torch.long)
-    attn = torch.zeros((R, T), dtype=torch.long)
-    for i, r in enumerate(row_dicts):
-        n = len(r["ids"])
-        ids[i, :n] = torch.tensor(r["ids"], dtype=torch.long)
-        attn[i, :n] = 1
-    enc = {"input_ids": ids, "attention_mask": attn, "rows": row_dicts}
-    return enc, meta
+def forward(model, head, rows) -> List[np.ndarray]:
+    """Raw 24-slot scores (float64 copies of the fp32 values), one unpadded row at a time."""
+    import torch
 
-
-def rows(enc) -> List[Dict[str, Any]]:
-    """Per-row dicts {'ids', 'last_pos', 'slots'}."""
-    return enc["rows"]
-
-
-@torch.no_grad()
-def forward(m: ArbiterModel, enc) -> List["torch.Tensor"]:
-    """Raw 24-slot scores per row (no temperature, no slot masking)."""
-    device = next(m.parameters()).device
-    ids = enc["input_ids"].to(device)
-    attn = enc["attention_mask"].to(device)
-    scores = m(ids, attn).float().cpu()
-    return [scores[i].numpy() for i in range(scores.shape[0])]
+    device = next(model.parameters()).device
+    out = []
+    with torch.no_grad():
+        for r in rows:
+            o = model(input_ids=torch.tensor([r["ids"]], device=device), output_hidden_states=True,
+                      use_cache=False, logits_to_keep=1)
+            h = o.hidden_states[-1][0, -1]
+            out.append(head(h.float()).double().cpu().numpy())
+    return out

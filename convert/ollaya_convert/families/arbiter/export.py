@@ -1,16 +1,19 @@
-"""Export hiteshluke/arbiter-4b (Gemma 3 4B IT + LoRA + 24-slot pointer head) to a weightless ONNX graph.
+"""Export hiteshluke/arbiter-4b (Gemma 3 4B IT + LoRA + 24-slot head) to a weightless ONNX graph.
 
-    uv run --with peft==0.21.0 --with transformers==4.55.0 \
-        python -m ollaya_convert.families.arbiter.export arbiter-4b --out out/arbiter-4b --run RUN --base BASE
+    uv run --with peft==0.19.1 --with transformers==4.57.6 \
+        python -m ollaya_convert.families.arbiter.export arbiter-4b --out out/arbiter-4b [--run RUN --base BASE]
 
 Graph (layout `arbiter-fixed-v1`, see layout.py and docs/families/arbiter.md):
     inputs   input_ids   int64   [rows, seq]  one row per question; seq a multiple of 64, right-padded
-             last_pos    int64   [rows]       position of the row's final valid token (where the head is read)
-    outputs  scores      float32 [rows, 24]   raw pointer-head scores (24 fixed slots)
+             last_pos    int64   [rows]       position of the row's last token (where the head is read)
+    outputs  scores      float32 [rows, 24]   raw scores of the 24 head slots
 
-The LoRA is NOT merged: every adapted Linear runs as `x W^T + (alpha/r) * (x A^T) B^T`, so the graph
-keeps the upstream files byte-referenced: the base shards (`model-0000i-of-00002.safetensors`, BF16, from
-`unsloth/gemma-3-4b-it`), the adapter `adapter_model.safetensors` (F32) and the head weights in `head.pt`.
+The trunk is transformers' Gemma 3 text model recomputed by `llm_common/gemma3.py` (causal, sliding-window
+layers, no mask input). The LoRA is NOT merged: every adapted Linear runs as `x W^T + 2.0 * (x A^T) B^T`, so
+the graph keeps the upstream files byte-referenced: the base shards `model-0000i-of-00002.safetensors` (BF16,
+`unsloth/gemma-3-4b-it`), the adapter `adapter_model.safetensors` (F32) and the head in `head.pt` (BF16, a
+torch zip whose tensors are stored uncompressed, so they have byte offsets too). The tokenizer is the base
+repository's `tokenizer.json`: the one in the model repository has truncation to 255 tokens switched on.
 """
 from __future__ import annotations
 
@@ -22,102 +25,73 @@ import shutil
 
 import torch
 
+from ..llm_common import onnx_export as ox
+from ..llm_common.gemma3 import Gemma3Trunk
+from ...weightless_sharded import safetensors_source, torchzip_source
 from . import ref
-from .layout import NUM_SLOTS, NOUL_SLOTS, CHOICE_SLOTS, SCORE_SLOTS, VERBALIZERS, MAX_CHOICE, SCORE_LEVELS
+from .layout import CHOICE_LETTERS, NUM_SLOTS, SCORE_LEVELS, VERBALIZERS, decision_fields
 
 INPUT_NAMES = ["input_ids", "last_pos"]
 OUTPUT_NAMES = ["scores"]
 
 
 class ArbiterGraph(torch.nn.Module):
-    """Thin wrapper: run the LoRA-wrapped Gemma 3 text model, pick the last-position hidden state per
-    row, apply the fixed 24-slot head. One output tensor, no slot masking (the server picks slots)."""
-
     def __init__(self, text_model, head):
         super().__init__()
-        self.text_model = text_model
+        self.trunk = Gemma3Trunk(text_model)
         self.head = head
 
     def forward(self, input_ids, last_pos):
-        attn = (torch.arange(input_ids.shape[1], device=input_ids.device)[None, :]
-                <= last_pos[:, None]).to(torch.long)
-        out = self.text_model(input_ids=input_ids, attention_mask=attn,
-                              output_hidden_states=True, use_cache=False)
-        h = out.hidden_states[-1] if hasattr(out, "hidden_states") and out.hidden_states is not None \
-            else out.last_hidden_state
+        h = self.trunk(input_ids).float()
         rows = torch.arange(h.shape[0], device=h.device)
-        h_last = h[rows, last_pos].float()
-        return self.head(h_last)
+        return self.head(h[rows, last_pos])
 
 
 def rename(name):
-    """Graph initializer name -> checkpoint tensor names (base, adapter or head.pt)."""
-    if name.startswith("text_model."):
-        x = name[len("text_model."):]
+    """Graph initializer name -> checkpoint tensor names (base shards, adapter or head.pt)."""
+    if name.startswith("trunk.m."):
+        x = name[len("trunk.m."):]
         if ".lora_" in x:
-            return ["base_model.model." + x.replace(".default", "")]
-        return [x.replace(".base_layer", "")]
-    if name.startswith("head.proj."):
-        return [name[len("head."):]]        # proj.weight / proj.bias in head.pt
+            return ["base_model.model.model.language_model." + x.replace(".default", "")]
+        return ["language_model.model." + x.replace(".base_layer", "")]
+    if name.startswith("head."):
+        return ["proj." + name[len("head."):]]
     return [name]
 
 
-def export(slug: str, out_dir: str, run_dir: str, base_dir: str):
+def export(slug, out_dir, run_dir, base_dir):
     meta = ref.MODELS[slug]
-    ck, tok, m = ref.load(run_dir, base_dir, device="cpu", merge=False)
-    if ck.upstream_base != (meta["base"], meta["base_revision"]):
-        raise SystemExit("%s meta.json names the base %s@%s, not the pinned %s@%s"
-                         % (slug, *ck.upstream_base, meta["base"], meta["base_revision"]))
-    m.eval()
+    tok = ref.tokenizer(base_dir)
+    model, head = ref.load(run_dir, base_dir, device="cpu", merge=False)
+    text_model = ref.text_model(model.base_model.model)   # Gemma3TextModel with peft LoRA Linear wrappers
+    graph = ArbiterGraph(text_model, head).eval()
 
-    text_model = m.text_model.base_model.model  # the Gemma 3 CausalLM with peft LoRA wrappers
-    graph = ArbiterGraph(text_model, m.head).eval()
-
-    # Three rows (one per primitive) so every dynamic axis > 1.
-    enc, _ = ref.encode(
-        tok, m,
-        "The customer was charged twice for order A-104 and wants the duplicate refunded. " * 8,
-        {
-            "a": {"type": "noul", "instructions": "Was the customer charged twice?"},
-            "b": {"type": "choice", "instructions": "Which team?",
-                  "criteria": {"billing": "charges", "tech": "bugs", "other": None}},
-            "c": {"type": "score", "instructions": "How upset?",
-                  "criteria": ["0 - calm", "1", "2", "3", "4", "5 - furious"]},
-        },
-    )
-    rws = ref.rows(enc)
-    T = ((max(len(r["ids"]) for r in rws) + 63) // 64) * 64
-    pad_id = tok.pad_token_id if tok.pad_token_id is not None else 0
-    ids = torch.full((len(rws), T), pad_id, dtype=torch.long)
-    for i, r in enumerate(rws):
+    # three rows (one per type, 64 to 192 tokens): every dynamic axis > 1
+    rows, _ = ref.encode(tok, "The customer was charged twice for order A-104 and wants the duplicate refunded. " * 8,
+                         {"a": {"type": "noul", "instructions": "Was the customer charged twice?"},
+                          "b": {"type": "choice", "instructions": "Which team?",
+                                "criteria": {"billing": "charges", "tech": "bugs", "other": None}},
+                          "c": {"type": "score", "instructions": "How upset?",
+                                "criteria": ["calm", "mild", "annoyed", "upset", "angry", "furious"]}})
+    # at least two 64-token chunks: torch.export specializes a dimension of size 1
+    T = max(2, -(-max(len(r["ids"]) for r in rows) // ox.SEQ_MULTIPLE)) * ox.SEQ_MULTIPLE
+    ids = torch.full((len(rows), T), tok.pad_token_id, dtype=torch.long)
+    for i, r in enumerate(rows):
         ids[i, :len(r["ids"])] = torch.tensor(r["ids"])
-    last_pos = torch.tensor([r["last_pos"] for r in rws], dtype=torch.long)
-    args = (ids, last_pos)
+    args = (ids, torch.tensor([r["last_pos"] for r in rows]))
     with torch.no_grad():
-        want = [torch.tensor(z) for z in ref.forward(m, enc)]
+        want = torch.tensor(ref.forward(model, head, rows), dtype=torch.float32)
         got = graph(*args)
-    print("eager graph vs reference (unmerged vs merged LoRA): %.2e"
-          % max(float((g - w).abs().max()) for g, w in zip(got, want)))
-
-    # The actual weightless export is deferred to llm_common.onnx_export; this file wires the dynamic
-    # shapes and the source rewrite the way the other LoRA + pointer-head families do. Maintainers
-    # finish the export at PR time by swapping the pinned revisions above and running this entrypoint.
-    try:
-        from ..llm_common import onnx_export as ox
-        from ...weightless_sharded import safetensors_source, torchzip_source
-    except Exception as e:
-        print("weightless export plumbing not available in this environment: %s" % e)
-        print("  the eager graph is correct; wire ox.export_graph + ox.weightless at PR time.")
-        return
+    print("eager graph vs reference (unmerged LoRA, batched vs one row at a time): %.2e"
+          % float((got - want).abs().max()))
 
     R = torch.export.Dim("rows", min=1, max=4096)
     N = torch.export.Dim("chunks", min=1, max=4096)
-    dyn = {"input_ids": {0: R, 1: ox.CHUNK * N if hasattr(ox, "CHUNK") else 64 * N},
-           "last_pos": {0: R}}
+    dyn = {"input_ids": {0: R, 1: ox.SEQ_MULTIPLE * N}, "last_pos": {0: R}}
     tmp = ox.scratch_dir("arbiter-export-")
     secs = ox.export_graph(graph, args, INPUT_NAMES, OUTPUT_NAMES, dyn, os.path.join(tmp, "model.onnx"))
     print("exported in %.0fs" % secs)
-    del graph, text_model, m, want, got
+    del graph, text_model, model, head, want, got   # the fp32 model (17 GB) is not needed for the rewrite
     gc.collect()
 
     base_ckpts = [os.path.join(base_dir, f) for f in meta["base_files"]]
@@ -125,92 +99,74 @@ def export(slug: str, out_dir: str, run_dir: str, base_dir: str):
         safetensors_source(f, p, repo=meta["base"], revision=meta["base_revision"], filename=f)
         for f, p in zip(meta["base_files"], base_ckpts)
     ] + [
-        safetensors_source("adapter_model.safetensors",
-                           os.path.join(run_dir, "adapter_model.safetensors"),
-                           repo=meta["repo"], revision=meta["revision"],
-                           filename="adapter_model.safetensors"),
-        torchzip_source("head.pt", os.path.join(run_dir, "head.pt"),
-                        repo=meta["repo"], revision=meta["revision"], filename="head.pt"),
+        safetensors_source("adapter_model.safetensors", os.path.join(run_dir, "adapter_model.safetensors"),
+                           repo=meta["repo"], revision=meta["revision"], filename="adapter_model.safetensors"),
+        torchzip_source("head.pt", os.path.join(run_dir, "head.pt"), repo=meta["repo"], revision=meta["revision"],
+                        filename="head.pt"),
     ]
     report = ox.weightless(tmp, out_dir, sources, rename)
     ox.cleanup(tmp)
-    shutil.copy(os.path.join(run_dir, "tokenizer.json"), os.path.join(out_dir, "tokenizer.json"))
+    shutil.copy(os.path.join(base_dir, "tokenizer.json"), os.path.join(out_dir, "tokenizer.json"))
 
-    verb_ids = []
-    for ch in VERBALIZERS:
-        tid = tok(ch, add_special_tokens=False)["input_ids"]
-        verb_ids.append(int(tid[0]))
-    cfg_path = os.path.join(run_dir, "adapter_config.json")
-    cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {"r": 16, "lora_alpha": 32}
-
+    cfg = json.load(open(os.path.join(run_dir, "adapter_config.json")))
     decision = {
         "engine": "onnx",
         "family": "arbiter",
         "layout": "arbiter-fixed-v1",
-        "upstream": {
-            "repo": meta["repo"], "revision": meta["revision"],
-            "base": meta["base"], "base_revision": meta["base_revision"],
-            "lora": {"r": cfg.get("r", 16), "alpha": cfg.get("lora_alpha", 32),
-                     "scaling": cfg.get("lora_alpha", 32) / cfg.get("r", 16),
-                     "merged": False},
-        },
+        "upstream": {"repo": meta["repo"], "revision": meta["revision"], "base": meta["base"],
+                     "base_revision": meta["base_revision"], "code": ref.ARBITER_GIT,
+                     "lora": {"r": cfg["r"], "alpha": cfg["lora_alpha"], "scaling": cfg["lora_alpha"] / cfg["r"],
+                              "merged": False}},
         "contract": {
             "inputs": {
                 "input_ids": {"dtype": "int64", "shape": ["rows", "seq"],
                               "note": "one row per question; seq a multiple of 64; right-pad with any id (pad)"},
-                "last_pos": {"dtype": "int64", "shape": ["rows"],
-                             "note": "index of the final valid token in each row (where the head is read)"},
+                "last_pos": {"dtype": "int64", "shape": ["rows"], "note": "position of the row's last token"},
             },
-            "outputs": {"scores": {"dtype": "float32", "shape": ["rows", "24"],
-                                   "note": "raw 24-slot pointer scores; mask to the row's valid slots by type"}},
-            "seq_multiple": ox.CHUNK if hasattr(ox, "CHUNK") else 64,
+            "outputs": {"scores": {"dtype": "float32", "shape": ["rows", NUM_SLOTS],
+                                   "note": "raw scores of the head's 24 slots; a question's option logits are "
+                                           "the scores at its slots"}},
+            "seq_multiple": ox.SEQ_MULTIPLE,
             "positions": "0..seq-1, implicit",
-            "attention": "causal + right-padded; last_pos selects the final content token per row",
+            "attention": "causal (sliding layers: the last %d positions); no mask input" % text_model_window(base_dir),
         },
-        "num_slots": NUM_SLOTS,
-        "slot_layout": {"noul": list(NOUL_SLOTS), "choice": list(CHOICE_SLOTS), "score": list(SCORE_SLOTS)},
-        "verbalizers": {"tokens": list(VERBALIZERS), "token_ids": verb_ids,
-                        "note": "slot 1 and slot 7 are both 'F'; resolved by tokenizing each character on its own"},
-        "max_options": MAX_CHOICE,
+        **decision_fields(tok.bos_token_id, tok.pad_token_id, ref.MAX_ROW_TOKENS),
+        "max_options": len(CHOICE_LETTERS),
         "score_levels": SCORE_LEVELS,
-        "max_state_tokens": 8192,
-        "max_row_tokens": 8192,
+        "verbalizers": VERBALIZERS,
         "templates": {
-            "prompt": "State: {state}\n\nQuestion: {instructions}\n\nOptions:\n{options_block}\n\nAnswer:",
-            "noul_options_block": "T. Yes / True\nF. No / False",
-            "choice_options_block": "{letter}. {option}  (letter = A..P, one line per option)",
-            "score_options_block": "0\n1\n2\n3\n4\n5",
-            "render": "arbiter text renderer: None->'', scalars->str(), list->'- item' lines, dict->'key: value' lines, 2-space nesting",
+            "row": "[bos] tok(\"State: {render(state)}\\n\\nQuestion: {render(instructions)}\\n\\nOptions:\\n{block}"
+                   "\\n\\nAnswer:\"); the head is read at the last token",
+            "noul_block": "T. Yes / True\nF. No / False",
+            "choice_block": "{letter}. {option}, one line per option, letters A..P",
+            "choice_option": "{name} | {name}: {render(description)}",
+            "score_block": "0\n1\n2\n3\n4\n5",
+            "render": "None->'', scalars->Python str(), list->'- item' lines, dict->'key: value' lines, 2-space nesting",
+            "add_special_tokens": False,
         },
-        "option_logits": {
-            "noul": "slots[0] = true, slots[1] = false",
-            "choice": "slots[2 + option_index] for option_index in 0..k-1",
-            "score": "slots[18 + level] for level in 0..5",
-        },
-        "opset": getattr(ox, "OPSET", 20),
-        "precision": "fp32 compute; base weights BF16 widened per forward pass; adapter and head F32",
+        "option_logits": {"noul": "scores[row, [1, 0]] (false = F, true = T)",
+                          "choice": "scores[row, 2 + j] for option j < 16",
+                          "score": "scores[row, 18 + level] for level < 6"},
+        "opset": ox.OPSET,
+        "precision": "fp32 compute; base weights and head BF16, widened by Cast (at load, or per forward pass with "
+                     "weights_in_memory bf16); adapter F32",
         "weights_in_memory": ox.weights_in_memory(report),
     }
-    calibration = {"temperature": [1.0, 1.0, 1.0],
-                   "temperature_by_options": {},
-                   "source": "arbiter v3.3 ships without a fitted temperature; T=1.0 across all primitives"}
+    calibration = {"temperature": [1.0, 1.0, 1.0], "temperature_by_options": {},
+                   "source": "no fitted temperature ships with the checkpoint (T = 1)"}
     files = {
         "model": slug,
         "layers": [
-            {"role": "graph", "path": "model.onnx", "hosted_by": "ollaya",
-             "bytes": os.path.getsize(os.path.join(out_dir, "model.onnx")),
+            {"role": "graph", "path": "model.onnx", "hosted_by": "ollaya", "bytes": os.path.getsize(os.path.join(out_dir, "model.onnx")),
              "sha256": ox.sha256_file(os.path.join(out_dir, "model.onnx"))},
             *[ox.file_entry("weights/base", meta["base"], meta["base_revision"], f, p, location=f)
               for f, p in zip(meta["base_files"], base_ckpts)],
-            ox.file_entry("weights/adapter", meta["repo"], meta["revision"],
-                          "adapter_model.safetensors",
-                          os.path.join(run_dir, "adapter_model.safetensors"),
-                          location="adapter_model.safetensors"),
-            ox.file_entry("weights/head", meta["repo"], meta["revision"], "head.pt",
-                          os.path.join(run_dir, "head.pt"), location="head.pt")
-            | {"note": "torch zip; the 24-slot head tensors are stored uncompressed and referenced by byte offset"},
-            ox.file_entry("tokenizer", meta["repo"], meta["revision"], "tokenizer.json",
-                          os.path.join(run_dir, "tokenizer.json")),
+            ox.file_entry("weights/adapter", meta["repo"], meta["revision"], "adapter_model.safetensors",
+                          os.path.join(run_dir, "adapter_model.safetensors"), location="adapter_model.safetensors"),
+            ox.file_entry("weights/head", meta["repo"], meta["revision"], "head.pt", os.path.join(run_dir, "head.pt"), location="head.pt")
+            | {"note": "torch zip; the head tensor is stored uncompressed and referenced by byte offset"},
+            ox.file_entry("tokenizer", meta["base"], meta["base_revision"], "tokenizer.json",
+                          os.path.join(base_dir, "tokenizer.json")),
             {"role": "decision", "path": "decision.json", "hosted_by": "ollaya"},
             {"role": "calibration", "path": "calibration.json", "hosted_by": "ollaya"},
         ],
@@ -220,33 +176,13 @@ def export(slug: str, out_dir: str, run_dir: str, base_dir: str):
     ox.write_json(os.path.join(out_dir, "decision.json"), decision)
     ox.write_json(os.path.join(out_dir, "calibration.json"), calibration)
     ox.write_json(os.path.join(out_dir, "files.json"), files)
-    print(json.dumps(files["weightless"]["stats"]),
-          "inline bytes", files["weightless"]["inline_bytes"],
-          "graph MB %.1f" % (files["layers"][0]["bytes"] / 2 ** 20),
-          "unused", files["unused_checkpoint_tensors"])
+    print(json.dumps(files["weightless"]["stats"]), "inline bytes", files["weightless"]["inline_bytes"],
+          "graph MB %.1f" % (files["layers"][0]["bytes"] / 2**20), "unused", files["unused_checkpoint_tensors"])
 
 
-# Exposed for the manifest/decision consumers that mirror the family's shape.
-decision = {
-    "engine": "onnx",
-    "family": "arbiter",
-    "layout": "arbiter-fixed-v1",
-    "num_slots": NUM_SLOTS,
-    "slot_layout": {"noul": list(NOUL_SLOTS), "choice": list(CHOICE_SLOTS), "score": list(SCORE_SLOTS)},
-    "max_options": MAX_CHOICE,
-    "score_levels": SCORE_LEVELS,
-    "templates": {
-        "prompt": "State: {state}\n\nQuestion: {instructions}\n\nOptions:\n{options_block}\n\nAnswer:",
-        "noul_options_block": "T. Yes / True\nF. No / False",
-        "choice_options_block": "{letter}. {option}  (letter = A..P)",
-        "score_options_block": "0\n1\n2\n3\n4\n5",
-    },
-    "option_logits": {
-        "noul": {"true": 0, "false": 1},
-        "choice": "slot = 2 + option_index  (0 <= option_index < 16)",
-        "score": "slot = 18 + level         (0 <= level < 6)",
-    },
-}
+def text_model_window(base_dir):
+    cfg = json.load(open(os.path.join(base_dir, "config.json")))
+    return cfg.get("text_config", cfg)["sliding_window"]
 
 
 def main():
