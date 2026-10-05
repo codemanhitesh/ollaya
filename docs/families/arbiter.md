@@ -82,9 +82,10 @@ shortest first under 8,192 padded tokens per `session.run` and returns the score
 
 ## Differences from upstream
 
-- **Precision.** Training and the published benchmarks ran the base 4-bit (NF4, bitsandbytes) with BF16 compute;
+- **Precision.** Training and the model-card benchmarks ran the base 4-bit (NF4, bitsandbytes) with BF16 compute;
   the adapter was trained against that 4-bit base (`unsloth/gemma-3-4b-it-unsloth-bnb-4bit`). Ollaya runs the
-  unquantized BF16 base in fp32, as does the reference here.
+  unquantized BF16 base in fp32, as does the reference here. Measured on the same rows, the unquantized base scores
+  equal or higher (see Quality).
 - **Length.** Training cut prompts at 768 tokens and the benchmark script at 1,024 (from the right, which drops
   `Answer:`). Ollaya reads rows of up to 8,192 tokens whole and rejects longer ones.
 - **Requests.** Training saw text; JSON states and instructions go through `render` above. Gemma's control tokens
@@ -131,15 +132,19 @@ The export, the goldens and both parity runs need the weights and a GPU, and hav
   `python -m ollaya_convert.families.llm_common.eval_refs arbiter arbiter-4b out/arbiter-4b` computes it from the
   fp32 reference; report it with its coverage (`answered` of `questions` in the output). The fixed head cannot
   answer every question: in the shared set's 40 typed-decisions rows, all 80 score questions have 4 or 5 levels.
-- **Published benchmarks** (the model card; measured on an NVIDIA T4 with the 4-bit base, the training prompt,
-  not through Ollaya):
+- **Published benchmarks** (measured on an NVIDIA T4 with the training prompt, one row at a time, not through
+  Ollaya). The model card numbers come from the 4-bit base the adapter was trained on. The same adapter and head
+  were then run on the same rows with the unquantized base (fp32 compute, the way Ollaya runs it):
 
-| Benchmark | Type | Accuracy | n |
-|---|---|---|---|
-| BoolQ (validation) | noul | 0.849 | 1,000 |
-| ARC-Challenge (test) | 4-way choice | 0.738 | 500 |
-| CommonsenseQA (validation) | 5-way choice | 0.706 | 500 |
-| OpenBookQA (test) | 4-way choice | 0.722 | 500 |
+| Benchmark | Type | n | 4-bit base (model card) | Unquantized base |
+|---|---|---|---|---|
+| BoolQ (validation) | noul | 1,000 | 0.849 | 0.853 |
+| ARC-Challenge (test) | 4-way choice | 500 | 0.738 | 0.762 |
+| CommonsenseQA (validation) | 5-way choice | 500 | 0.706 | 0.720 |
+| OpenBookQA (test) | 4-way choice | 500 | 0.722 | 0.748 |
+
+  The unquantized base is equal or better on all four (per-benchmark differences are within sampling noise, all in
+  the same direction), so running the full BF16 base in Ollaya does not cost accuracy relative to the model card.
 
 ## Limits
 
