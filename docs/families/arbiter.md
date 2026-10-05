@@ -117,21 +117,53 @@ uv run --no-project --with transformers==4.57.6 --with numpy \
 uv run --with peft==0.19.1 --with transformers==4.57.6 \
     python -m ollaya_convert.families.arbiter.export arbiter-4b --out out/arbiter-4b
 uv run --with peft==0.19.1 --with transformers==4.57.6 \
-    python -m ollaya_convert.families.arbiter.goldens out/arbiter-4b --requests shared.jsonl
+    python -m ollaya_convert.families.arbiter.goldens out/arbiter-4b --requests shared.jsonl --device auto
 uv run --with peft==0.19.1 --with transformers==4.57.6 \
-    python -m ollaya_convert.families.arbiter.parity out/arbiter-4b --requests shared.jsonl
+    python -m ollaya_convert.families.arbiter.parity out/arbiter-4b --requests shared.jsonl --device auto
 cd .. && cargo run --release -p ollaya-runner --example parity_arbiter -- \
     convert/out/arbiter-4b convert/out/goldens-arbiter-4b.jsonl cuda
 ```
 
-The export, the goldens and both parity runs need the weights and a GPU, and have not been run yet: no numbers.
+`--device auto` splits the fp32 reference (about 17 GB with the unused vision tower) over every visible GPU; on
+one GPU with enough memory, `--device cuda` does the same work.
+
+**Measured 2026-10-05** on Kaggle (2x NVIDIA T4 16 GB, 4 vCPUs, 31 GB RAM, Ubuntu 24.04, driver 580), with
+the weights at the pinned revisions (the base shards, `tokenizer.json`, `adapter_model.safetensors` and
+`head.pt` downloaded from the Hub; the base sha256 values match the table above):
+
+- **Prompt** (`check.py`): 127 requests, 6 identical, 121 rejected by both, 420 rows identical, 0 mismatches.
+- **Export**: 126 s to trace, 350 s in all on the CPU; peak process RSS 20.3 GiB. The weightless `model.onnx`
+  is 10.3 MB (921 external tensors, 445 casts); 439 tensors of the first base shard (the vision tower) and 162
+  adapter tensors (its vision LoRA) are unused. The eager graph (LoRA unmerged, batched) is within 7.6e-6 of
+  the reference on the export's three sample rows.
+- **Goldens**: 245 records (121 rejected requests, each followed by its `#valid` questions), 420 questions,
+  fp32 reference split over both T4s.
+- **Export parity** (`parity.py`, ONNX Runtime 1.30 on the CPU): 420 rows identical, 0 row mismatches, 121
+  requests rejected by both, 0 rejection mismatches, the same decision on 420 of 420 questions. Largest slot
+  score difference 7.2e-5 (noul), 5.3e-5 (score), 3.2e-5 (choice); largest probability difference 1.4e-5.
+- **Runtime parity** (`parity_arbiter`, CUDA execution provider on one T4: Microsoft ONNX Runtime 1.28.2, CUDA
+  12 build, loaded with `--features ollaya-runner/cuda-dynamic`; `weights_in_memory` bf16): 420 rows identical,
+  0 row mismatches, 0 rejection mismatches, 0 questions refused by the shared question rules, the same
+  decision on 420 of 420 questions. Largest slot score difference 1.7e-4 (tolerance 1e-3), probability
+  difference max 1.4e-5, p99 8.7e-6. Requests of 3 or more questions (n = 117): p50 1,594 ms, p95 3,627 ms;
+  GPU memory peak 9.4 GiB (`nvidia-smi`). The CPU execution provider was not run.
 
 ## Quality
 
-- **Typed-decisions** (all 400 test states, argmax against the majority label): **not measured yet (TODO).**
-  `python -m ollaya_convert.families.llm_common.eval_refs arbiter arbiter-4b out/arbiter-4b` computes it from the
-  fp32 reference; report it with its coverage (`answered` of `questions` in the output). The fixed head cannot
-  answer every question: in the shared set's 40 typed-decisions rows, all 80 score questions have 4 or 5 levels.
+- **Typed-decisions** (all 400 test states, argmax against the majority label, temperature 1, from the fp32
+  reference: `python -m ollaya_convert.families.llm_common.eval_refs arbiter arbiter-4b out/arbiter-4b
+  --device auto`, measured 2026-10-05 on 2x T4):
+
+  | Type | Questions | Answered | Accuracy |
+  |---|---|---|---|
+  | noul | 600 | 600 | 0.677 |
+  | choice | 600 | 600 | 0.563 |
+  | score | 800 | 0 | none: every score has 4 (700) or 5 (100) levels |
+  | all | 2,000 | 1,200 (coverage 0.60) | 0.620 |
+
+  The fixed head answers a score only with exactly 6 levels, so no typed-decisions score question is answered
+  and Ollaya rejects such requests (422). Accuracy is over the answered questions only. Fitting one
+  temperature per type on half the rows does not change it materially (0.628 and 0.612 on the other half).
 - **Published benchmarks** (measured on an NVIDIA T4 with the training prompt, one row at a time, not through
   Ollaya). The model card numbers come from the 4-bit base the adapter was trained on. The same adapter and head
   were then run on the same rows with the unquantized base (fp32 compute, the way Ollaya runs it):
@@ -150,7 +182,7 @@ The export, the goldens and both parity runs need the weights and a GPU, and hav
 
 - **Options.** Choices of 1..16 options, scores of exactly 6 levels (0..5).
 - **Rows.** Up to 8,192 tokens per question, the whole state included; the model was trained on up to 768.
-- **Memory.** About 8 GB with the weights kept BF16.
+- **Memory.** About 8 GB of weights kept BF16; the CUDA parity run peaked at 9.4 GiB on a T4.
 
 ## License and attribution
 
