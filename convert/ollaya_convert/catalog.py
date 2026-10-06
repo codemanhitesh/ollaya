@@ -356,7 +356,10 @@ CATALOG = {
                                   "tokenizer.json")),
         },
         "aliases": {"latest": "4b"},
-        "parity": "PARITY-PENDING",
+        "parity": "Ollaya's Rust runtime matches the reference (transformers' Gemma 3 with the authors' LoRA and head, "
+                  "fp32, the training script's prompts) on 420 questions from 127 requests, on CPU and CUDA (RTX "
+                  "4090): identical token rows, the same 121 rejected requests, the same decision on every question, "
+                  "slot scores within 8.5e-5 and probabilities within 1.0e-5.",
     },
     "decision": {
         "namespace": "library",

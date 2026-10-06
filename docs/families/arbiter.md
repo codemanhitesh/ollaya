@@ -124,14 +124,27 @@ cd .. && cargo run --release -p ollaya-runner --example parity_arbiter -- \
     convert/out/arbiter-4b convert/out/goldens-arbiter-4b.jsonl cuda
 ```
 
-The export, the goldens and both parity runs need the weights and a GPU, and have not been run yet: no numbers.
+Measured 2026-10-06 on the RTX 4090 machine (transformers 4.57.6 and peft 0.19.1 for the reference; the export
+and the runtime on the shared set without `--requests`: 127 requests, 6 accepted whole, 121 rejected by both, 420
+rows):
+
+| Check | Device | Rows | Decisions | Slot scores max | Option logits max | Probabilities max |
+|---|---|---|---|---|---|---|
+| Export (`parity.py`, ONNX Runtime) | CPU | 420 identical | 420/420 | 5.6e-5 | | 9.3e-6 |
+| Runtime (`parity_arbiter`) | x86-64 CPU | 420 identical | 420/420 | 6.0e-5 | 5.9e-5 | 1.0e-5 |
+| Runtime (`parity_arbiter`) | CUDA, RTX 4090 | 420 identical | 420/420 | 8.5e-5 | 6.4e-5 | 9.2e-6 |
+
+The runtime runs on CUDA with Microsoft's ONNX Runtime 1.28.2 from the CUDA 13 pack, as the GPU runner does. In
+the runner, a request of three or more questions takes 154 ms at the median on the RTX 4090 (p95 303 ms, 117
+requests of the shared set, one forward pass per question).
 
 ## Quality
 
-- **Typed-decisions** (all 400 test states, argmax against the majority label): **not measured yet (TODO).**
-  `python -m ollaya_convert.families.llm_common.eval_refs arbiter arbiter-4b out/arbiter-4b` computes it from the
-  fp32 reference; report it with its coverage (`answered` of `questions` in the output). The fixed head cannot
-  answer every question: in the shared set's 40 typed-decisions rows, all 80 score questions have 4 or 5 levels.
+- **Typed-decisions** (all 400 test states, argmax against the majority label, from the fp32 reference with
+  `eval_refs.py`, which the runtime matches above): the fixed head answers **1,200 of the 2,000 questions**. None
+  of the 800 score questions has 6 levels (they have 4 or 5), so all of them are rejected. On the 1,200 it
+  answers: **0.620** (choice 0.563 on 600, noul 0.677 on 600), ECE 0.149 with no temperature. These numbers are
+  not comparable with the other families' full 2,000-question scores.
 - **Published benchmarks** (measured on an NVIDIA T4 with the training prompt, one row at a time, not through
   Ollaya). The model card numbers come from the 4-bit base the adapter was trained on. The same adapter and head
   were then run on the same rows with the unquantized base (fp32 compute, the way Ollaya runs it):
