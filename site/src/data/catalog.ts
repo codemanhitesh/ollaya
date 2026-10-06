@@ -222,6 +222,20 @@ const overlays: Record<string, ModelOverlay> = {
       '9b': { summary: 'Jeeves-9B without thinking, with the fitted temperature 1.86. Needs a 24 GB GPU.' },
     },
   },
+  clef: {
+    stats: { tag: 'clef:flash', accuracy: 0.703, latencyMs: 532 },
+    title: 'Clef',
+    description:
+      "Decision models by Cloudflare. Clef-Flash is Qwen3.5-9B, fully post-trained, with a joint schema head that scores every option of every question together, in one forward pass per request. Its probabilities come straight from the head. Ollaya runs its text path.",
+    publisher: { name: 'Cloudflare', url: 'https://huggingface.co/Cloudflare' },
+    capabilities: ['decision', 'fine-tuned'],
+    keywords: ['clef', 'clef-flash', 'cloudflare', 'qwen', 'qwen3.5', 'joint schema', 'llm', 'decision', 'classification', 'typesafe', 'jev', 'system one'],
+    rank: 16,
+    tags: {
+      latest: { summary: 'Same as clef:flash.' },
+      flash: { summary: 'Clef-Flash (Qwen3.5-9B, post-trained) with its joint schema head, text only. Needs a 24 GB GPU.' },
+    },
+  },
   jeb: {
     stats: { tag: 'jeb:9b', latencyMs: 124 },
     title: 'Jebadiah',
@@ -266,6 +280,20 @@ const overlays: Record<string, ModelOverlay> = {
       '4b': { summary: "JevK5 v0.3 (4B), Q8_0 GGUF, with the author's temperature 1.22: 0.625 on typed decisions; up to 16 options per question." },
     },
   },
+  snap: {
+    stats: { tag: 'snap:2b', accuracy: 0.648, latencyMs: 68 },
+    title: 'snap',
+    description:
+      "logitlab's snap1-2b: MiniCPM5-2B fine-tuned to read one option letter after the prompt of emnlmn's snap engine. Ollaya runs the author's Q8_0 GGUF on llama.cpp with snap's own prompt, on NVIDIA GPUs, Apple silicon or the CPU.",
+    publisher: { name: 'logitlab', url: 'https://huggingface.co/logitlab' },
+    capabilities: ['decision', 'fine-tuned', 'gguf'],
+    keywords: ['snap', 'snap1', 'minicpm', 'minicpm5', 'gguf', 'llama.cpp', 'llm', 'decision', 'classification', 'typesafe', 'jev', 'system one'],
+    rank: 17,
+    tags: {
+      latest: { summary: 'Same as snap:2b.' },
+      '2b': { summary: "snap1-2b (MiniCPM5-2B), Q8_0 GGUF, raw probabilities: 0.648 on typed decisions; up to 26 options per question." },
+    },
+  },
   gliclass: {
     stats: { tag: 'gliclass:large', accuracy: 0.477, latencyMs: 14.7 },
     title: 'GLiClass',
@@ -278,6 +306,22 @@ const overlays: Record<string, ModelOverlay> = {
     tags: {
       latest: { summary: 'Same as gliclass:large.' },
       large: { summary: 'GLiClass instruct large v1.0 (DeBERTa-v3-large backbone), Apache-2.0.' },
+    },
+  },
+  decima: {
+    stats: { tag: 'decima:base', accuracy: 0.495, latencyMs: 15.1 },
+    title: 'Decima',
+    description:
+      "A. M. Madani's Decima: multilingual encoders (mmBERT-base, multilingual-e5-small) with a late-interaction scorer that reads every option against the state, so option order never changes the answer, and an ordinal head for scores. A general model, one for coding-agent decisions, and a small one that is the fastest on a CPU.",
+    publisher: { name: 'A. M. Madani', url: 'https://huggingface.co/amyrmahdy' },
+    capabilities: ['decision', 'multilingual', 'fine-tuned'],
+    keywords: ['decima', 'mmbert', 'e5', 'multilingual-e5-small', 'late interaction', 'encoder', 'agent', 'coding agent', 'hooks', 'cpu', 'multilingual', 'decision', 'classification', 'typesafe', 'jev', 'system one'],
+    rank: 18,
+    tags: {
+      latest: { summary: 'Same as decima:base.' },
+      base: { summary: 'Decima-base 2.0 (mmBERT-base, 321M), fp32: 0.495 on typed decisions; 15 ms for five questions on an RTX 4090.' },
+      agent: { summary: "Decima-agent 2.1: decima-base fine-tuned for coding-agent decisions (secret and command gates, tool and model choice); states up to 2,048 tokens." },
+      small: { summary: 'Decima-small 1.1 (multilingual-e5-small, 122M), fp32: 0.432 on typed decisions; 146 ms for five questions on a CPU, the fastest there.' },
     },
   },
 }

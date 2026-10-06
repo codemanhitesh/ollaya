@@ -226,19 +226,23 @@ function Section({
 const scoreboard: { tag: string; acc: number; ms: number; pick?: boolean; note?: string }[] = [
   { tag: 'winnow:e4b', acc: 0.722, ms: 89, pick: true },
   { tag: 'kev:9b', acc: 0.722, ms: 498 },
+  { tag: 'clef:flash', acc: 0.703, ms: 532 },
   { tag: 'winnow:12b', acc: 0.702, ms: 131 },
   { tag: 'cygnet:12b', acc: 0.683, ms: 202 },
   { tag: 'decider:4b', acc: 0.68, ms: 520 },
   { tag: 'jeeves:9b', acc: 0.68, ms: 838 },
   { tag: 'kev:4b', acc: 0.669, ms: 354 },
   { tag: 'nimble:9b', acc: 0.665, ms: 2297 },
+  { tag: 'snap:2b', acc: 0.648, ms: 68 },
   { tag: 'jevk5:4b', acc: 0.625, ms: 105 },
   { tag: 'decider:2b', acc: 0.591, ms: 190 },
   { tag: 'nli', acc: 0.548, ms: 20 },
   { tag: 'decider:0.8b', acc: 0.506, ms: 155 },
+  { tag: 'decima:base', acc: 0.495, ms: 15 },
   { tag: 'gliclass', acc: 0.477, ms: 15 },
   { tag: 'kev:0.8b', acc: 0.46, ms: 128 },
   { tag: 'von', acc: 0.447, ms: 23 },
+  { tag: 'decima:small', acc: 0.432, ms: 7 },
   { tag: 'laya:en', acc: 0.361, ms: 10 },
   { tag: 'clm:8b', acc: 0.357, ms: 149, note: 'questions cached' },
 ]
@@ -382,8 +386,8 @@ const VS_TICKS = [0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
 const vsPos = (a: number) => `${(((Math.min(Math.max(a, VS_MIN), VS_MAX) - VS_MIN) / (VS_MAX - VS_MIN)) * 100).toFixed(2)}%`
 
 const vsFeatures: { label: string; ollaya: string; ollama: string }[] = [
-  { label: 'Decision models', ollaya: '15 families: encoders (laya, nli, gliclass, von) and decoders (winnow, kev, decider, nimble, jeb, jeeves, cygnet and more)', ollama: 'Nimble and Tev1, decoders only' },
-  { label: 'Small encoders (milliseconds, CPU-friendly)', ollaya: 'laya, nli, gliclass, von', ollama: 'None' },
+  { label: 'Decision models', ollaya: '18 families: encoders (laya, nli, gliclass, von, decima) and decoders (winnow, clef, kev, decider, nimble, jeb, jeeves, cygnet, snap and more)', ollama: 'Nimble and Tev1, decoders only' },
+  { label: 'Small encoders (milliseconds, CPU-friendly)', ollaya: 'laya, nli, gliclass, von, decima', ollama: 'None' },
   { label: 'Probabilities', ollaya: "Calibrated with each author's fitted temperature, refittable in a Modelfile", ollama: 'Raw softmax; documented as uncalibrated' },
   { label: 'Options per question', ollaya: 'Up to 255, as TypeSafe', ollama: 'Up to 26' },
   { label: 'Questions per request', ollaya: 'Up to 256, as TypeSafe', ollama: 'Up to 64' },
@@ -818,7 +822,7 @@ function Platforms() {
         </a>
         <p class="max-w-md text-[13px] text-muted sm:text-right">
           NVIDIA GPUs need driver R525 or newer; the install scripts fetch the CUDA libraries only when they find one.
-          On a Mac, laya and nli run on the Apple GPU through MLX; other models, AMD and Intel GPUs, and the Windows and Linux desktop apps use the CPU.
+          On a Mac, laya and nli run on the Apple GPU through MLX; other models, AMD and Intel GPUs, and the Windows and Linux desktop apps without the command line installed use the CPU.
         </p>
       </div>
     </Section>

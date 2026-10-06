@@ -71,6 +71,16 @@ What other projects do (sources in the evidence list below):
    the **same pinned build's** `llama-server` with the same plan
    (`convert/ollaya_convert/families/llm_common/plan.py`), one goldens file per device. For winnow,
    the author's own server is a second, independent check of the prompt token ids and decisions.
+7. **The gate is per device.** A device passes when the runtime on it matches stock llama-server on
+   the same device: identical prompt ids, the same decision on every question, option logits within
+   1e-3. Backends round differently (CPU kernels, CUDA, Metal and Vulkan each order their sums their
+   own way), so one device is never gated against another's goldens. The differences between devices
+   are measured and published instead (`results/runs/2026-10-01-parity-rtx4090-windows.json`,
+   `cross_device`): against the RTX 4090's CUDA goldens, winnow:e4b on the x86-64 CPU differs by up to
+   0.28 in option log-probability (501 of 505 decisions the same) and on Vulkan by 0.32 (501 of 505);
+   cygnet:12b by 2.76 on the CPU (496 of 502) and 1.40 on Vulkan (497 of 502). Vulkan is no further
+   from CUDA than the CPU backend Ollaya already ships, and on its own goldens it passes like the
+   others (winnow:e4b 505 of 505, logits within 1.1e-5; #27).
 
 ## Consequences
 

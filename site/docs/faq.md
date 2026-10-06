@@ -24,7 +24,7 @@ Ollama 0.35 (September 2026) added `/v1/systemone` for two decoder models, Bespo
 
 | | Ollaya | Ollama 0.35 |
 |---|---|---|
-| Models | 15 families: encoders (`laya`, `nli`, `gliclass`, `von`) and decoders (`winnow`, `kev`, `decider`, `nimble`, `jeb`, `jeeves`, `cygnet` and more) | Nimble (9B) and Tev1 (4B, 0.8B) |
+| Models | 18 families: encoders (`laya`, `nli`, `gliclass`, `von`, `decima`) and decoders (`winnow`, `clef`, `kev`, `decider`, `nimble`, `jeb`, `jeeves`, `cygnet`, `snap` and more) | Nimble (9B) and Tev1 (4B, 0.8B) |
 | Encoders | Read every question in one forward pass. `laya:en` answers five questions in 8 to 10 ms on an RTX 4090 | Not supported |
 | Probabilities | Calibrated with each model's fitted temperatures, which you can refit on your own data in a [Modelfile](/docs/modelfile#calibration) | Softmax of the raw label scores. Ollama documents `confidence` as uncalibrated |
 | Limits | TypeSafe's: 1 to 256 questions, 2 to 255 options, 2 to 10 score levels | 1 to 64 questions, 2 to 26 options and score levels, a 64 KiB request body |
@@ -53,6 +53,7 @@ Open decision models from these families. See [Models](/search), which compares 
 - **`decision`** from the vLLM Semantic Router contributors: `decision:eos`, Decision 1.0 Eos, a fully fine-tuned Qwen3.5-0.8B with an endpoint head that scores every option at its last token, calibrated, with rows of up to 16,384 tokens.
 - **`qwen3guard`** from the Qwen team: a safety guard in 119 languages. It answers its own built-in questions (safe, controversial or unsafe, and the unsafe category), so you send it only the text.
 - **`von`** from Victor Hugo Panisa: Von 1.1 on ModernBERT-large, which scores every option at its own marker in one pass and reads states of up to 8,192 tokens.
+- **`decima`** from A. M. Madani: `decima:base` (`decima`, mmBERT-base), `decima:agent` and `decima:small`, multilingual encoders with a late-interaction scorer that reads every option against the state, so the order of the options never changes the answer. `decima:agent` is fine-tuned for the decisions inside a coding agent's loop, and `decima:small` is the fastest model on a CPU: 146 ms for five questions.
 - **`clm`** from Contrastive-LM: CLM-v0.1-8B, which embeds the state and each option with Qwen3-8B and picks the option closest to the state through two trained heads. Questions and options are cached, so repeated ones are nearly free. It scores 0.357 on typed decisions; its authors built it for agent, game and tool-calling states.
 - **`jevk5`** from alibiserikbay: JevK5 v0.3, a Qwen3.5-4B fine-tune published as GGUF files. Ollaya runs the author's 4B Q8_0 file on llama.cpp, with up to 16 options per question.
 
@@ -74,14 +75,14 @@ A decision is a single forward pass. Measured end to end through the HTTP API on
 
 ## Do I need a GPU?
 
-No. Ollaya runs on the CPU, and on x86-64 Linux and Windows uses an NVIDIA GPU with driver R525 or newer when one is present (CUDA 13 libraries from R580 on, CUDA 12 before that). The install scripts download the CUDA libraries only when they find a GPU. The desktop app runs models on the CPU. GGUF models such as `winnow` run on llama.cpp, which also uses the GPU of Apple silicon Macs (Metal); their parity has been checked on CUDA and the x86-64 CPU, not yet on Metal. They are large language models, so a GPU makes a much bigger difference for them than for the encoder models: see each model's page for measured speeds. On an RTX 30, 40 or 50 series card GGUF models need nothing more. On older or data-center cards (GTX 10 series, V100, T4, A100, H100) llama.cpp's CUDA libraries carry code the driver compiles on first use, which takes a newer driver: R570 or newer with the CUDA 12 libraries, and a driver for CUDA 13.4 or newer with the CUDA 13 libraries. With an older driver Ollaya runs GGUF models on the CPU and logs why; `ollaya llama-devices` shows each GPU's compute capability and whether the kernels run on it.
+No. Ollaya runs on the CPU, and on x86-64 Linux and Windows uses an NVIDIA GPU with driver R525 or newer when one is present (CUDA 13 libraries from R580 on, CUDA 12 before that). The install scripts download the CUDA libraries only when they find a GPU. The Windows and Linux desktop apps bundle no CUDA libraries: on their own they run models on the CPU, and when the command line is installed too with its GPU libraries (and is as new as the app), the app starts the server from that install, which uses the GPU. GGUF models such as `winnow` run on llama.cpp, which also uses the GPU of Apple silicon Macs (Metal); their parity has been checked on CUDA and the x86-64 CPU, not yet on Metal. They are large language models, so a GPU makes a much bigger difference for them than for the encoder models: see each model's page for measured speeds. On an RTX 30, 40 or 50 series card GGUF models need nothing more. On older or data-center cards (GTX 10 series, V100, T4, A100, H100) llama.cpp's CUDA libraries carry code the driver compiles on first use, which takes a newer driver: R570 or newer with the CUDA 12 libraries, and a driver for CUDA 13.4 or newer with the CUDA 13 libraries. With an older driver Ollaya runs GGUF models on the CPU and logs why; `ollaya llama-devices` shows each GPU's compute capability and whether the kernels run on it.
 
 ## Which platforms are supported?
 
 - **Linux** x86-64 and ARM64 with glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10 or newer.
 - **macOS** 14 or newer on Apple silicon. `laya` and `nli:modernbert-large` run on the Apple GPU through MLX, 2 to 3 times faster than on the CPU; the other models run on the CPU.
 - **Docker:** `ghcr.io/ollaya-dev/ollaya` for linux/amd64 and linux/arm64, and `:cuda` for NVIDIA GPUs (`:cuda12` for host drivers older than R580). Use it on older Linux distributions too.
-- **Windows** 10 and 11 on 64-bit x86 PCs: the desktop app (CPU), or `irm {{SITE_ORIGIN}}/install.ps1 | iex` for the command line, which also uses an NVIDIA GPU. WSL 2 with the Linux installer works too.
+- **Windows** 10 and 11 on 64-bit x86 PCs: the desktop app, and `irm {{SITE_ORIGIN}}/install.ps1 | iex` for the command line, which also uses an NVIDIA GPU (install both and the app's server uses it too). WSL 2 with the Linux installer works too.
 - **The desktop app** runs on all three: see [Download](/download).
 
 ## Does my data leave my machine?

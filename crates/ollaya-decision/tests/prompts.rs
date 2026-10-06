@@ -1,12 +1,14 @@
-//! The llama layouts against their Python references, case for case.
+//! The llama layouts against their references, case for case.
 //!
 //! Fixtures: `convert/ollaya_convert/families/llm_common/prompt_goldens.py`, which runs
 //! `llm_logits/ref.py`, `winnow/ref.py` and `jevk5/ref.py` on the engine-form requests the daemon
-//! sends (the jevk5 prompts also checked against the author's own `jevk5.prompt`). Token ids and
-//! logits need the model; `cargo run -p ollaya-runner --example parity_llama` checks those.
+//! sends (the jevk5 prompts also checked against the author's own `jevk5.prompt`), and
+//! `convert/ollaya_convert/families/snap/fixture.py`, which takes snap's own prompt export. Token
+//! ids and logits need the model; `cargo run -p ollaya-runner --example parity_llama` checks those.
 
 use ollaya_decision::jevk5::{self, JevK5Config};
 use ollaya_decision::llm_logits::{self, LlmLogitsConfig};
+use ollaya_decision::snap::SnapConfig;
 use ollaya_decision::winnow::{self, WinnowConfig};
 use ollaya_decision::{Error, QType};
 use serde_json::Value;
@@ -155,4 +157,38 @@ fn jevk5_prompts_match_the_reference() {
         }
     }
     assert!(checked > 400, "only {checked} questions checked");
+}
+
+#[test]
+fn snap_prompts_match_the_authors_export() {
+    let config: SnapConfig = serde_json::from_str(&fixture("snap_decision.json")).unwrap();
+    config.validate().unwrap();
+    let mut checked = 0;
+    for case in cases("snap_prompts.jsonl") {
+        let id = case["id"].as_str().unwrap();
+        // snap's export asks each question on its own, so each is a request of one question.
+        for q in case["questions"].as_array().unwrap() {
+            let qid = q["qid"].as_str().unwrap();
+            let questions = serde_json::json!({ qid: q["question"].clone() });
+            let got = config.questions(&case["state"], &questions);
+            if let Some(err) = q["error"].as_str() {
+                let e = got.expect_err(&format!("{id}/{qid}: expected {err}"));
+                assert_eq!(error_class(&e), err, "{id}/{qid}: {e}");
+                continue;
+            }
+            let (order, mut prompts) = got.unwrap_or_else(|e| panic!("{id}/{qid}: {e}"));
+            let want = &q["expected"];
+            assert_eq!(order.as_str(), want["layout"], "{id}/{qid}: layout");
+            let (_, p) = prompts.remove(0);
+            assert_eq!(
+                p.user,
+                want["user"].as_str().unwrap(),
+                "{id}/{qid}: user message"
+            );
+            let keys: Vec<String> = serde_json::from_value(want["keys"].clone()).unwrap();
+            assert_eq!(p.keys, keys, "{id}/{qid}: keys");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 573, "questions checked");
 }

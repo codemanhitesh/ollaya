@@ -68,8 +68,10 @@ If none is available, tell the user how to install Ollaya:
 | `decision` | Decision 1.0 Eos: fully fine-tuned Qwen3.5-0.8B with an endpoint head; rows up to 16k tokens; calibrated | ~0.2 s GPU, ~0.85 s CPU |
 | `qwen3guard` | Safety guard; answers only its built-in questions (send no `questions`) | ~40 ms GPU, ~2 s CPU |
 | `von` | ModernBERT-large, every option scored at its own marker; states up to 8k tokens; calibrated | ~25 ms GPU, ~0.8 s CPU |
+| `decima` | Decima-base (mmBERT-base, 321M): options read against the state one by one, order never matters; calibrated; states up to 512 tokens. `decima:agent` for coding-agent gates and tool choice (2,048-token states), `decima:small` for a CPU | ~15 ms GPU, ~0.45 s CPU (`decima:small` ~0.15 s) |
 | `nimble` | Bespoke Labs' Nimble (LoRA on Qwen3.5-9B): reads the whole request as a schema; calibrated; up to 255 options; needs a 24 GB GPU | ~2.3 s GPU |
 | `jeeves` | PostHog's Jeeves-9B (no thinking): Qwen3.5-9B with a pointer head; calibrated; needs a 24 GB GPU | ~0.84 s GPU |
+| `clef` | Cloudflare's Clef-Flash: Qwen3.5-9B with a joint schema head, all questions in one pass; well calibrated without a temperature; needs a 24 GB GPU | ~0.53 s GPU |
 | `jeb` | Jebadiah (Qwen3.5 4b/9b, Qwen3.8 27b) on llama.cpp; per-type calibration | `jeb:9b` ~0.12 s GPU |
 | `cygnet` | Frozen Gemma 4 12B IT with Cygnet's letter prompt; 0.683 on typed decisions; calibrated; up to 20 options | ~0.2 s GPU |
 

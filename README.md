@@ -102,7 +102,10 @@ numbers: [ollaya.dev/search](https://ollaya.dev/search).
 | `nimble` | Bespoke Labs' Nimble v2: a LoRA on Qwen3.5-9B that reads the whole request as a JSON schema and scores option codes, with the author's temperature: 0.665 on typed-decisions, up to 255 options, ~2.3 s for five questions on an RTX 4090 |
 | `jeb`, `jeb:4b`, `jeb:27b` | Jason Brashear's Jebadiah (AINode): LoRAs merged into Qwen3.5 (9B by default, 4B) and Qwen3.8-27B, run from the authors' GGUF on llama.cpp with their per-type temperatures; `jeb:9b` answers five questions in 124 ms on an RTX 4090 |
 | `jeeves` | PostHog's Jeeves-9B without its reasoning chain: Qwen3.5-9B (LoRA merged) and a pointer head: 0.680 on typed-decisions with an ECE of 0.031, 838 ms for five questions on an RTX 4090 |
+| `clef` | Cloudflare's Clef-Flash: Qwen3.5-9B, fully post-trained, with a joint schema head that scores every question's options in one forward pass: 0.703 on typed-decisions with an ECE of 0.020 and no fitted temperature, 532 ms for five questions on an RTX 4090 |
 | `cygnet` | blockbrain-ai's Cygnet: frozen Gemma 4 12B IT (Q8_0 GGUF) with a letter-readout prompt and temperature 3.4: 0.683 on typed-decisions, 202 ms for five questions on an RTX 4090 |
+| `snap` | logitlab's snap1-2b: MiniCPM5-2B fine-tuned on the prompt of emnlmn's snap engine, run from the author's Q8_0 GGUF on llama.cpp with snap's own prompt: 0.648 on typed-decisions, up to 26 options, 68 ms for five questions on an RTX 4090 |
+| `decima`, `decima:agent`, `decima:small` | A. M. Madani's Decima: multilingual encoders with a late-interaction scorer that reads every option against the state. `decima:base` (mmBERT-base, 321M) scores 0.495 on typed-decisions in 15 ms for five questions on an RTX 4090; `decima:agent` is fine-tuned for coding-agent decisions; `decima:small` (122M) takes 146 ms on a CPU |
 
 Browse them at [ollaya.dev/search](https://ollaya.dev/search). Laya tags ending in
 `-fp32` or `-fp16` pin the precision. The derived files of every model are also published at
@@ -129,7 +132,7 @@ speed on every machine, and parity with the authors' own code on each device.
   on Ollama: Ollaya applies each model's fitted temperature.
 - **Speed.** Every model on an RTX 5090, an RTX 4090 and two CPUs (Threadripper 3960X,
   i9-13900K), five questions per request through the HTTP API. The encoders (`laya`, `nli`,
-  `gliclass`, `von`, `qwen3guard`) take 7 to 35 ms on a GPU and 0.3 to 2.4 s on a CPU; the decoders
+  `gliclass`, `von`, `qwen3guard`, `decima`) take 7 to 35 ms on a GPU and 0.15 to 2.4 s on a CPU; the decoders
   0.1 to 0.9 s on a GPU and 1.3 to 25 s on a CPU; `nimble:9b` 1.8 to 2.3 s on a GPU.
 - **Parity.** Before a model ships, its runtime is checked question by question against the
   authors' code (or llama.cpp's own server, for GGUF models) on each device it runs on.
@@ -188,8 +191,8 @@ Apache-2.0. Each model keeps its own license: `laya` (Convai Innovations), `deci
 `kev` (Jared Palmer, on Qwen3.5 by the Qwen team), `decision` (the vLLM Semantic Router
 contributors, on Qwen3.5), `qwen3guard` (Qwen team), `gliclass` (Knowledgator), `von` (Victor Hugo
 Panisa), `winnow` (EldanRing, on Gemma 4 by Google DeepMind), `jevk5` (alibiserikbay, on Qwen3.5), `nimble`
-(Bespoke Labs, on Qwen3.5), `jeeves` (PostHog, on Qwen3.5), `jeb` (Jason Brashear, on Qwen3.5 and Qwen3.8), `cygnet` (Gemma 4 by Google
-DeepMind; the Cygnet recipe is MIT) and `nli:modernbert-large` are Apache-2.0, and `nli:deberta-v3-large` (Moritz Laurer) is MIT. llama.cpp, which Ollaya ships for
+(Bespoke Labs, on Qwen3.5), `jeeves` (PostHog, on Qwen3.5), `clef` (Cloudflare, on Qwen3.5), `jeb` (Jason Brashear, on Qwen3.5 and Qwen3.8), `cygnet` (Gemma 4 by Google
+DeepMind; the Cygnet recipe is MIT), `snap` (logitlab, on MiniCPM5 by OpenBMB; snap's prompt is MIT), `decima` (A. M. Madani, on mmBERT-base by JHU CLSP and multilingual-e5-small by intfloat, both MIT) and `nli:modernbert-large` are Apache-2.0, and `nli:deberta-v3-large` (Moritz Laurer) is MIT. llama.cpp, which Ollaya ships for
 GGUF models, is MIT.
 
 Ollaya is an independent project. It is not affiliated with or endorsed by Ollama or TypeSafe.

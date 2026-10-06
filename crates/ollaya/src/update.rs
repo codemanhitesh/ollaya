@@ -49,6 +49,19 @@ async fn latest() -> Result<String> {
     Ok(tag.trim_start_matches('v').to_owned())
 }
 
+/// `canonicalize` gives a verbatim path on Windows (`\\?\C:\...`), which PowerShell's `Join-Path`
+/// and most programs reject (#50): turn it back into the ordinary form. Other paths are unchanged.
+fn plain_path(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
+}
+
 /// How this binary was installed.
 #[derive(Debug, PartialEq)]
 enum Install {
@@ -98,6 +111,7 @@ pub async fn update(check: bool) -> Result<()> {
     println!("ollaya {latest} is available (this is {VERSION})");
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
+        .map(plain_path)
         .context("locating the ollaya executable")?;
     let kind = install_kind(&exe);
     if check {
@@ -162,6 +176,24 @@ mod tests {
         assert_eq!(parse("1.2.3-rc1"), Some((1, 2, 3)));
         assert!(parse("0.10.0") > parse("0.9.9"));
         assert_eq!(parse("x"), None);
+    }
+
+    #[test]
+    fn verbatim_paths_become_plain() {
+        assert_eq!(
+            plain_path(PathBuf::from(
+                r"\\?\C:\Users\me\AppData\Local\Programs\Ollaya\bin\ollaya.exe"
+            )),
+            PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Ollaya\bin\ollaya.exe")
+        );
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\UNC\server\share\bin\ollaya.exe")),
+            PathBuf::from(r"\\server\share\bin\ollaya.exe")
+        );
+        assert_eq!(
+            plain_path(PathBuf::from("/usr/local/bin/ollaya")),
+            PathBuf::from("/usr/local/bin/ollaya")
+        );
     }
 
     #[test]

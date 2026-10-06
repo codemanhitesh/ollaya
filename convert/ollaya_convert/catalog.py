@@ -6,7 +6,7 @@ refuses to run if its sha256 differs from the upstream file.
 """
 import os
 
-from .laya_ref import DEFAULT_ROOT
+from .model_paths import DEFAULT_ROOT
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "out")
 LICENSE_APACHE = open(os.path.join(os.path.dirname(__file__), "..", "..", "LICENSE")).read()
@@ -81,6 +81,15 @@ def _wl(slug, repo, commit, description, params, ctx, languages, license=None, l
         "license_text": license_text,
         "arch": arch,
     }
+
+
+def _decima(slug, commit, description, params, ctx):
+    """A Decima tag: the encoder and the head from the repository's pytorch/ checkpoint, and its tokenizer."""
+    return dict(_wl(slug, "amyrmahdy/" + slug, commit, description, params, ctx, ["multilingual"],
+                    wl_dir=os.path.join(OUT, slug),
+                    weights={"model.safetensors": "pytorch/encoder/model.safetensors",
+                             "head.safetensors": "pytorch/head.safetensors"}),
+                tokenizer="pytorch/encoder/tokenizer.json")
 
 
 def _kev_weights(base, base_commit, shards):
@@ -437,6 +446,20 @@ CATALOG = {
                          "Winnow-E4B (Gemma 4 E4B IT fine-tune), Q8_0 GGUF on llama.cpp: option-label logits "
                          "after Winnow's own prompt, with the author's fitted temperature.",
                          "7.5B", ["multilingual"], notice="NOTICE"),
+            # Opt-in images: each text tag's GGUF, decision and calibration plus its matching projector from the
+            # same revision, read through libmtmd. The text tags keep their downloads and inference path.
+            "12b-vision": dict(_gguf("winnow-12b-q8_0", "EldanRing/Winnow-12B", "b6ac22b0d51b69b18200acacb3fbdd98073fffe8",
+                                     "gguf/Winnow-12B-Q8_0.gguf",
+                                     "Winnow 12B Q8_0 with the author's matching vision projector: PNG image decisions "
+                                     "through libmtmd.",
+                                     "12B", ["multilingual"], notice="NOTICE"),
+                               mmproj="gguf/mmproj-Winnow-12B.gguf"),
+            "e4b-vision": dict(_gguf("winnow-e4b-q8_0", "EldanRing/Winnow-E4B", "734302fe5fbfeb3f21a7ece62653c9539be4aaf3",
+                                     "gguf/Winnow-E4B-Q8_0.gguf",
+                                     "Winnow E4B Q8_0 with the author's matching vision projector: PNG image decisions "
+                                     "through libmtmd.",
+                                     "7.5B", ["multilingual"], notice="NOTICE"),
+                               mmproj="gguf/mmproj-Winnow-E4B.gguf"),
         },
         "aliases": {"latest": "12b"},
         "parity": "PARITY-PENDING",
@@ -465,6 +488,30 @@ CATALOG = {
                   "(RTX 4090): 502 questions, every decision the same, option logits within 7.7e-6 and probabilities "
                   "within 4.1e-7. The user messages are identical to Cygnet's own shim on 1,364 test prompts.",
     },
+    "snap": {
+        "namespace": "library",
+        "model": "snap",
+        "family": "snap",
+        "author": "logitlab (snap1-2b, with emnlmn's snap) and OpenBMB (MiniCPM5)",
+        "license": "Apache-2.0",
+        "license_text": "snap1-2b by logitlab (https://huggingface.co/logitlab/snap1-2b-GGUF), openbmb/MiniCPM5-2B "
+                        "(Apache-2.0) fine-tuned with a LoRA and merged, Apache-2.0. Its prompt is snap's "
+                        "(https://github.com/emnlmn/snap, MIT), ported to Ollaya's runtime.\n"
+                        "Licensed under the Apache License, Version 2.0.\n\n" + LICENSE_APACHE,
+        "tags": {
+            # Q8_0 of snap1-2b at the GGUF repo's pinned commit; snap's own default is Q4_K_M, which the
+            # author measured the same on typed-decisions (0.654 against 0.655).
+            "2b": _gguf("snap-v1-snap1-2b-q8_0", "logitlab/snap1-2b-GGUF", "39321915452e54428e18558ba882c771bc856110",
+                        "snap1-2b-q8_0.gguf",
+                        "snap1-2b (MiniCPM5-2B with a merged LoRA), Q8_0 GGUF on llama.cpp: the option letters' "
+                        "logits after snap's own prompt, raw probabilities. Up to 26 options.",
+                        "2B", ["en", "it"]),
+        },
+        "aliases": {"latest": "2b"},
+        "parity": "Ollaya's runner matches stock llama-server of the pinned build (b11146) on the same GGUF, CPU "
+                  "and CUDA (RTX 5090): 573 questions, every decision the same, option logits within 7.4e-6 and "
+                  "probabilities within 1.9e-6. The prompt token ids are snap's own, from its export-prompts.",
+    },
     "jeeves": {
         "namespace": "library",
         "model": "jeeves",
@@ -490,6 +537,34 @@ CATALOG = {
                   "thinking) on 430 questions from 107 requests, on CUDA: identical token rows and option positions, the "
                   "same 16 rejected requests, the same decision on every question, scores within 1.9e-4 and "
                   "probabilities within 1.4e-5.",
+    },
+    "clef": {
+        "namespace": "library",
+        "model": "clef",
+        "family": "clef",
+        "author": "Cloudflare (post-trained model and joint schema head) and the Qwen team (base model)",
+        "license": "Apache-2.0",
+        "license_text": ("Clef-Flash by Cloudflare (https://huggingface.co/Cloudflare/clef-flash): Qwen3.5-9B, fully "
+                         "post-trained, with a joint schema head, Apache-2.0.\n"
+                         "Base model: Qwen3.5-9B by the Qwen team, Apache-2.0.\n"
+                         "Licensed under the Apache License, Version 2.0.\n\n") + LICENSE_APACHE,
+        "tags": {
+            # Text only: the vision tower (in the last shard) is not exported. Clef (27B) does not fit the GPUs
+            # the parity gate runs on, so only Clef-Flash is converted.
+            "flash": dict(_wl("clef-flash", "Cloudflare/clef-flash", "17f0b0ad64efb65d273590632833508766b2aae6",
+                              "Cloudflare's Clef-Flash: Qwen3.5-9B post-trained with a joint schema head that scores "
+                              "every option of every question together, in one forward pass per request. Needs about "
+                              "19 GB of memory.",
+                              "9B", 4096, ["en"], wl_dir=os.path.join(OUT, "clef-flash"),
+                              weights={**{"model-%05d-of-00004.safetensors" % i: "model-%05d-of-00004.safetensors" % i
+                                          for i in range(1, 5)},
+                                       "joint_head.safetensors": "joint_head.safetensors"})),
+        },
+        "aliases": {"latest": "flash"},
+        "parity": "Ollaya's Rust runtime matches the authors' own code (joint_schema_model.py: their encoder, Qwen3.5 "
+                  "model and joint schema head, fp32) on 571 questions from 131 requests, on CUDA: identical token ids "
+                  "and spans, the same 13 rejected requests, the same decision on every question, logits within "
+                  "4.3e-5 and probabilities within 6.3e-6.",
     },
     "jeb": {
         "namespace": "library",
@@ -548,5 +623,43 @@ CATALOG = {
         "parity": "Ollaya's runner matches stock llama-server of the pinned build (b11146) on the same GGUF, "
                   "CUDA (RTX 4090): 593 questions, every decision the same, option logits within 7.7e-6 and "
                   "probabilities within 1.6e-6. The prompts are byte-identical to the author's jevk5.prompt.",
+    },
+    "decima": {
+        "namespace": "library",
+        "model": "decima",
+        "family": "decima",
+        "author": "A. M. Madani (amyrmahdy)",
+        "license": "Apache-2.0",
+        "license_text": ("Decima-small, Decima-base and Decima-agent by A. M. Madani "
+                         "(https://huggingface.co/amyrmahdy, https://github.com/amyrmahdy/decima), Apache-2.0.\n"
+                         "Base models: multilingual-e5-small by intfloat "
+                         "(https://huggingface.co/intfloat/multilingual-e5-small) for Decima-small, and mmBERT-base "
+                         "by JHU CLSP (https://huggingface.co/jhu-clsp/mmBERT-base) for Decima-base and "
+                         "Decima-agent, both MIT License.\n"
+                         "Licensed under the Apache License, Version 2.0.\n\n") + LICENSE_APACHE,
+        # The fp32 PyTorch checkpoint under pytorch/ of each repository, the encoder and the late-interaction
+        # head in two files; the author's int8 ONNX exports are not used. The code is the GitHub tag v1.1.1
+        # (2df60942); decima/ is unchanged at v2.0.0, which released base and agent.
+        "tags": {
+            "small": _decima("decima-small", "2e7f4d0757df0215f48f2a9b2b589e1f3a6348ed",  # HF tag v1.1.1
+                             "A. M. Madani's Decima-small 1.1: multilingual-e5-small with a late-interaction "
+                             "scorer that reads every option against the state, and an ordinal head for "
+                             "scores, with the author's temperature. 122M parameters; fast on a CPU.",
+                             "122M", 512),
+            "base": _decima("decima-base", "2468005d5e48e95eb74072c32a6d9df164578071",  # HF tag v2.0
+                            "A. M. Madani's Decima-base 2.0: mmBERT-base with Decima's late-interaction scorer "
+                            "and ordinal head, with the author's temperature. 321M parameters, multilingual.",
+                            "321M", 512),
+            "agent": _decima("decima-agent", "86a07aab1c340fa5869bdb754e57d3851a1d288a",  # HF tag v2.1
+                             "A. M. Madani's Decima-agent 2.1: Decima-base fine-tuned for the decisions inside "
+                             "a coding agent's loop (secret and command gates, tool, command and model choice). "
+                             "States up to 2,048 tokens.",
+                             "321M", 2048),
+        },
+        "aliases": {"latest": "base"},
+        "parity": "Ollaya's Rust runtime matches the author's own code (decima/model.py and systemone.py, fp32) on "
+                  "581 questions from 122 requests for each of small, base and agent, on CPU and CUDA (RTX 4090 and "
+                  "RTX 5090): identical token rows and truncation, the same 18 rejected requests, the same decision "
+                  "on every question, scores within 2.0e-5 and probabilities within 5.5e-6.",
     },
 }

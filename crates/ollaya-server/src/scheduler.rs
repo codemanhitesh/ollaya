@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-use ollaya_decision::{cygnet, jebadiah, jevk5, llm_logits, winnow};
+use ollaya_decision::{cygnet, jebadiah, jevk5, llm_logits, snap, winnow};
 use ollaya_registry::pull::RunCheck;
 
 use crate::Error;
@@ -32,6 +32,8 @@ pub struct SchedulerConfig {
     pub max_loaded: usize,
     /// `auto`, `cpu`, `cuda`, `cuda:<n>` or `metal`, passed to runners.
     pub device: String,
+    /// CPU threads per runner (`--threads`); `None` keeps each engine's default.
+    pub threads: Option<usize>,
     pub load_timeout: Duration,
     /// The executable to spawn as `<exe> runner ...`: the running binary, or on Windows with a GPU
     /// pack, its copy inside the pack (see [`crate::launch`]).
@@ -58,24 +60,27 @@ impl SchedulerConfig {
     }
 }
 
-/// Which runner an ONNX model starts from, given the configured device (see [`Scheduler::spawn`]).
+/// Which runner a model starts from, given the configured device (see [`Scheduler::spawn`]).
 #[derive(Debug, PartialEq)]
 enum Plan {
     /// `exe`, with `arg0` and `env`, and the configured device.
     Configured,
-    /// `cpu_exe` with `--device cpu`.
+    /// The CPU launch: `cpu_exe` for ONNX models, `exe` with `--device cpu` for GGUF models.
     Cpu,
     /// `Configured`; if it fails to load, `Cpu`.
     GpuThenCpu,
 }
 
-/// With a separate CPU executable, `cpu` runs there and `auto` tries the GPU runner first (which
-/// never falls back to the CPU itself, see `ollaya_runner::server`). GGUF models run on
-/// llama.cpp, not ONNX Runtime, and keep the configured runner.
+/// With a separate CPU executable, an ONNX model on `cpu` runs there, and on `auto` tries the GPU
+/// runner first (which never falls back to the CPU itself, see `ollaya_runner::server`).
+///
+/// A GGUF model on `auto` falls back to the CPU inside its runner when llama.cpp reports an
+/// error, but not when the GPU backend takes the process down before the runner answers (a
+/// driver fault, an abort in ggml): it then starts again with `--device cpu`.
 fn plan(device: &str, onnx: bool, has_cpu_exe: bool) -> Plan {
-    match (device, onnx && has_cpu_exe) {
-        ("cpu", true) => Plan::Cpu,
-        ("auto", true) => Plan::GpuThenCpu,
+    match (device, onnx, has_cpu_exe) {
+        ("cpu", true, true) => Plan::Cpu,
+        ("auto", true, true) | ("auto", false, _) => Plan::GpuThenCpu,
         _ => Plan::Configured,
     }
 }
@@ -97,6 +102,7 @@ pub const LLAMA_LAYOUTS: &[&str] = &[
     jevk5::LAYOUT,
     jebadiah::LAYOUT,
     cygnet::LAYOUT,
+    snap::LAYOUT,
 ];
 
 #[derive(Debug, Deserialize)]
@@ -303,7 +309,8 @@ impl Scheduler {
             .unwrap()
             .insert(model.digest.clone(), runner.clone());
         tracing::info!(model = %model.name, device = %runner.device, precision = %runner.precision,
-            engine = %runner.engine, load_ms = started.elapsed().as_millis() as u64, "loaded model");
+            engine = %runner.engine, threads = self.config.threads,
+            load_ms = started.elapsed().as_millis() as u64, "loaded model");
         Ok((Lease { runner, keep_alive }, started.elapsed()))
     }
 
@@ -434,12 +441,19 @@ impl Scheduler {
         };
         let onnx = matches!(model.files, EngineFiles::Onnx(_));
         let cpu_exe = self.config.cpu_exe.as_deref();
-        let cpu = cpu_exe.map(|exe| Launch {
-            exe,
-            arg0: None,
-            env: &[],
-            device: "cpu",
-        });
+        let cpu = if onnx {
+            cpu_exe.map(|exe| Launch {
+                exe,
+                arg0: None,
+                env: &[],
+                device: "cpu",
+            })
+        } else {
+            Some(Launch {
+                device: "cpu",
+                ..configured
+            })
+        };
         match (plan(&self.config.device, onnx, cpu_exe.is_some()), cpu) {
             (Plan::Cpu, Some(cpu)) => self.spawn_with(model, &cpu).await,
             (Plan::GpuThenCpu, Some(cpu)) => match self.spawn_with(model, &configured).await {
@@ -483,6 +497,9 @@ impl Scheduler {
                         model.name
                     ))
                 })?;
+                if let Some(mmproj) = &f.mmproj {
+                    cmd.arg("--mmproj").arg(mmproj);
+                }
                 cmd.arg("--gguf")
                     .arg(&f.gguf)
                     .arg("--decision")
@@ -492,6 +509,9 @@ impl Scheduler {
             }
         }
         cmd.arg("--device").arg(launch.device);
+        if let Some(n) = self.config.threads {
+            cmd.arg("--threads").arg(n.to_string());
+        }
         #[cfg(unix)]
         if let Some(arg0) = launch.arg0 {
             cmd.arg0(arg0);
@@ -660,10 +680,13 @@ mod tests {
         assert_eq!(plan("auto", true, true), Plan::GpuThenCpu);
         assert_eq!(plan("cuda", true, true), Plan::Configured);
         assert_eq!(plan("cuda:1", true, true), Plan::Configured);
-        // GGUF models run on llama.cpp and keep the configured runner.
+        // GGUF models run on llama.cpp and keep the configured runner; on `auto`, a runner that
+        // dies on the GPU before it answers starts again on the CPU.
         assert_eq!(plan("cpu", false, true), Plan::Configured);
-        assert_eq!(plan("auto", false, true), Plan::Configured);
-        // Without a separate CPU executable, nothing changes.
+        assert_eq!(plan("auto", false, true), Plan::GpuThenCpu);
+        assert_eq!(plan("auto", false, false), Plan::GpuThenCpu);
+        assert_eq!(plan("cuda", false, false), Plan::Configured);
+        // Without a separate CPU executable, nothing changes for ONNX models.
         assert_eq!(plan("cpu", true, false), Plan::Configured);
         assert_eq!(plan("auto", true, false), Plan::Configured);
     }

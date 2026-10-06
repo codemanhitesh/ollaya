@@ -1,0 +1,46 @@
+{
+ "schema": 1,
+ "suite": "latency-triage",
+ "date": "2026-10-06T08:07:49Z",
+ "ollaya": "0.10.0",
+ "machine": "rtx-4090",
+ "machine_detail": {
+  "id": "rtx-4090",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "threads": 24,
+  "gpus": [
+   {
+    "name": "NVIDIA GeForce RTX 4090",
+    "driver": "616.92",
+    "memory": "24564 MiB"
+   }
+  ],
+  "os": "Linux 6.18.33.2-microsoft-standard-WSL2"
+ },
+ "device": "cuda",
+ "protocol": {
+  "preset": "triage",
+  "questions": 5,
+  "states": 30,
+  "warm": 5,
+  "n": 20,
+  "client": "one request at a time over HTTP to /api/decide, timed by the client; each request a different short message, in turn"
+ },
+ "note": "snap, added with Ollaya 0.10.0; the same protocol and machine as the 2026-10-01 RTX 4090 sweep.",
+ "results": [
+  {
+   "model": "snap:2b",
+   "questions": "triage",
+   "load_ms": 635.9,
+   "first_request_ms": 704.7,
+   "answered_by": "snap:2b",
+   "p50_ms": 67.3,
+   "p90_ms": 68.2,
+   "min_ms": 66.6,
+   "eval_p50_ms": 66.7,
+   "input_tokens": 606,
+   "device": "cuda:0",
+   "precision": "Q8_0"
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+{
+ "schema": 1,
+ "suite": "latency-triage",
+ "date": "2026-10-06T09:10:06Z",
+ "ollaya": "0.10.0",
+ "machine": "rtx-4090",
+ "machine_detail": {
+  "id": "rtx-4090",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "threads": 24,
+  "gpus": [
+   {
+    "name": "NVIDIA GeForce RTX 4090",
+    "driver": "616.92",
+    "memory": "24564 MiB"
+   }
+  ],
+  "os": "Linux 6.18.33.2-microsoft-standard-WSL2"
+ },
+ "device": "cuda",
+ "protocol": {
+  "preset": "triage",
+  "questions": 5,
+  "states": 30,
+  "warm": 5,
+  "n": 20,
+  "client": "one request at a time over HTTP to /api/decide, timed by the client; each request a different short message, in turn"
+ },
+ "note": "decima, measured on a development build (0.10.0 with the decima-late-interaction-v1 engine) before its release; the same protocol and machine as the 2026-10-01 RTX 4090 sweep. decima:small was timed under decima:latest, its alias in that build's registry; decima:base and decima:agent 30 minutes later, with the same build.",
+ "results": [
+  {
+   "model": "decima:small",
+   "questions": "triage",
+   "load_ms": 840.2,
+   "first_request_ms": 850.1,
+   "answered_by": "decima:latest",
+   "p50_ms": 7.3,
+   "p90_ms": 8.5,
+   "min_ms": 6.7,
+   "eval_p50_ms": 6.8,
+   "input_tokens": 567,
+   "device": "cuda:0",
+   "precision": "F32"
+  },
+  {
+   "model": "decima:base",
+   "questions": "triage",
+   "load_ms": 1433.5,
+   "first_request_ms": 1450.1,
+   "answered_by": "decima:base",
+   "p50_ms": 15.1,
+   "p90_ms": 15.4,
+   "min_ms": 14.1,
+   "eval_p50_ms": 14.6,
+   "input_tokens": 458,
+   "device": "cuda:0",
+   "precision": "F32"
+  },
+  {
+   "model": "decima:agent",
+   "questions": "triage",
+   "load_ms": 1269.1,
+   "first_request_ms": 1284.2,
+   "answered_by": "decima:agent",
+   "p50_ms": 14.8,
+   "p90_ms": 15.9,
+   "min_ms": 14.0,
+   "eval_p50_ms": 14.2,
+   "input_tokens": 458,
+   "device": "cuda:0",
+   "precision": "F32"
+  }
+ ]
+}

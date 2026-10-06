@@ -30,7 +30,8 @@ mod fake_runner {
     use axum::routing::{get, post};
     use serde_json::{Value, json};
 
-    /// `runner --decision <file> ...`: behaviour comes from the decision layer's `fake` object.
+    /// `runner --decision <file> ... --device <device>`: behaviour comes from the decision
+    /// layer's `fake` object.
     pub fn main(args: &[String]) {
         let arg = |name: &str| {
             args.iter()
@@ -41,15 +42,22 @@ mod fake_runner {
         let decision: Value =
             serde_json::from_str(&std::fs::read_to_string(arg("--decision").unwrap()).unwrap())
                 .unwrap();
+        let device = arg("--device").unwrap_or_else(|| "cpu".into());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(serve(Arc::new(decision)));
+        rt.block_on(serve(Arc::new(decision), device));
     }
 
-    async fn serve(decision: Arc<Value>) {
+    async fn serve(decision: Arc<Value>, device: String) {
         let fake = &decision["fake"];
         if fake["fail_load"].as_bool() == Some(true) {
             eprintln!("fake runner: cannot load this model");
             std::process::exit(1);
+        }
+        // A GPU backend that takes the process down while it loads (a driver fault, an abort in
+        // ggml), before the runner can fall back to the CPU itself.
+        if fake["abort_unless_cpu"].as_bool() == Some(true) && device != "cpu" {
+            eprintln!("fake runner: the GPU backend aborted");
+            std::process::exit(134);
         }
         // Log more than any pipe buffer holds before announcing, as a verbose runner does.
         for i in 0..fake["stderr_lines"].as_u64().unwrap_or(0) {
@@ -61,9 +69,14 @@ mod fake_runner {
         .await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let device = if device == "auto" {
+            "cpu".into()
+        } else {
+            device
+        };
         println!(
             "{}",
-            json!({"port": port, "device": "cpu", "precision": "fp32"})
+            json!({"port": port, "device": device, "precision": "fp32"})
         );
         let d = decision.clone();
         let app = axum::Router::new()
@@ -200,6 +213,32 @@ fn add_model(store: &Store, name: &str, languages: &[&str], fake: Value) {
         .unwrap();
 }
 
+/// A GGUF model, which runs on llama.cpp: the GGUF file and its decision layer.
+fn add_gguf_model(store: &Store, name: &str, fake: Value) {
+    let config = json!({"model_format": "gguf", "family": "winnow", "layout": "winnow-v1",
+        "parameter_size": "4B", "description": format!("{name} for tests"), "license": "Apache-2.0"});
+    let decision =
+        json!({"engine": "llama", "family": "winnow", "layout": "winnow-v1", "fake": fake});
+    let manifest = Manifest {
+        schema_version: 2,
+        media_type: MANIFEST_V2.into(),
+        config: blob(store, media::CONFIG, config.to_string().as_bytes(), None),
+        layers: vec![
+            blob(store, media::GGUF, format!("{name} gguf").as_bytes(), None),
+            blob(
+                store,
+                media::DECISION,
+                decision.to_string().as_bytes(),
+                None,
+            ),
+        ],
+    };
+    let name = ModelName::parse(name).unwrap();
+    store
+        .write_manifest(&name, &serde_json::to_vec(&manifest).unwrap())
+        .unwrap();
+}
+
 fn add_router(store: &Store) {
     let config = json!({"model_format": "router", "family": "laya", "languages": ["en", "multilingual"],
         "description": "laya router"});
@@ -251,7 +290,8 @@ impl Daemon {
             exe: std::env::current_exe().unwrap(),
             arg0: None,
             env: vec![],
-            llama_dir: None,
+            // The fake runner needs no llama.cpp; GGUF models need the directory to be set.
+            llama_dir: Some(dir.path().join("llama")),
             cpu_exe: None,
         };
         let state = build(config.clone(), runner).unwrap();
@@ -1057,12 +1097,53 @@ async fn pull_streams_ndjson() {
 }
 
 async fn create_copy_delete() {
-    let d = Daemon::laya().await;
+    let d = Daemon::start(
+        |dir| {
+            laya_store(dir);
+            let store = Store::open(dir).unwrap();
+            let name = ModelName::parse("laya:en").unwrap();
+            let mut entry = store.read_manifest(&name).unwrap().unwrap();
+            let calibration = json!({
+                "temperature": [6.08, 3.0, 40.0],
+                "temperature_map": {"kind": "von-entropy-length-v1", "bias": 0.2056},
+                "temperature_range": [0.5, 50.0]
+            });
+            entry.manifest.layers.push(blob(
+                &store,
+                media::CALIBRATION,
+                calibration.to_string().as_bytes(),
+                None,
+            ));
+            store
+                .write_manifest(&name, &serde_json::to_vec(&entry.manifest).unwrap())
+                .unwrap();
+        },
+        |_| {},
+    )
+    .await;
+    d.client
+        .create(
+            &serde_json::from_value(json!({"model": "inherited", "from": "laya:en"})).unwrap(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let inherited = d.client.show("inherited").await.unwrap();
+    assert!(inherited.modelfile.contains("FROM laya:en"));
+    assert!(
+        !inherited.modelfile.contains("CALIBRATION"),
+        "calibration outside the create API must stay inherited"
+    );
+    let calibration = json!({
+        "temperature": [1.6, 1.25, 1.98],
+        "temperature_by_options": {"choice:2": 1.9, "score:3-5": 1.25}
+    });
     let r = http()
         .post(d.url("/api/create"))
         .body(
             json!({"model": "triage", "from": "laya:en",
                    "questions": {"department": {"type": "choice", "criteria": ["billing", "technical"]}},
+                   "calibration": calibration,
                    "parameters": {"precision": "fp32"}, "license": ["MIT", "Apache-2.0"],
                    "description": "Ticket triage"})
             .to_string(),
@@ -1105,6 +1186,34 @@ async fn create_copy_delete() {
     assert_eq!(show.license, "MIT\n\nApache-2.0");
     assert!(show.questions.as_ref().unwrap().contains_key("department"));
     assert!(show.modelfile.contains("FROM laya:en") && show.modelfile.contains("QUESTIONS"));
+    let exported_calibration = show
+        .modelfile
+        .split_once("CALIBRATION \"\"\"\n")
+        .expect("the Modelfile must preserve custom calibration")
+        .1
+        .split_once("\n\"\"\"")
+        .unwrap()
+        .0;
+    assert_eq!(
+        serde_json::from_str::<Value>(exported_calibration).unwrap(),
+        calibration
+    );
+    // A model derived from triage without its own calibration shares triage's layer: FROM brings
+    // it back, so the Modelfile leaves it out, even though it would round-trip.
+    d.client
+        .create(
+            &serde_json::from_value(json!({"model": "triage-child", "from": "triage"})).unwrap(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let child = d.client.show("triage-child").await.unwrap();
+    assert!(child.modelfile.contains("FROM triage"));
+    assert!(
+        !child.modelfile.contains("CALIBRATION"),
+        "an inherited calibration stays inherited: {}",
+        child.modelfile
+    );
     let models = d.client.models().await.unwrap();
     assert_eq!(
         models
@@ -1153,6 +1262,48 @@ async fn create_copy_delete() {
     assert_eq!(
         (status, body["code"].as_str()),
         (404, Some("MODEL_NOT_FOUND"))
+    );
+    d.stop().await;
+}
+
+async fn show_modelfile_keeps_a_multi_line_description() {
+    let d = Daemon::laya().await;
+    let description = "Ticket triage\nRoutes billing and technical tickets.";
+    d.client
+        .create(
+            &serde_json::from_value(
+                json!({"model": "triage", "from": "laya:en", "description": description}),
+            )
+            .unwrap(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let show = d.client.show("triage").await.unwrap();
+    // A Modelfile reads a multi-line value only from a `"""` block; on one line, the second
+    // line would be parsed as a directive.
+    assert!(
+        show.modelfile
+            .contains(&format!("\nDESCRIPTION \"\"\"\n{description}\n\"\"\"\n")),
+        "{}",
+        show.modelfile
+    );
+
+    d.client
+        .create(
+            &serde_json::from_value(
+                json!({"model": "short", "from": "laya:en", "description": "Ticket triage"}),
+            )
+            .unwrap(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let show = d.client.show("short").await.unwrap();
+    assert!(
+        show.modelfile.contains("\nDESCRIPTION Ticket triage\n"),
+        "{}",
+        show.modelfile
     );
     d.stop().await;
 }
@@ -1237,6 +1388,34 @@ async fn presets_create_show_decide_delete() {
     d.stop().await;
 }
 
+async fn gguf_runner_that_dies_on_the_gpu_restarts_on_the_cpu() {
+    let d = Daemon::start(
+        |dir| {
+            let store = Store::open(dir).unwrap();
+            add_gguf_model(&store, "fragile:latest", json!({"abort_unless_cpu": true}));
+            add_gguf_model(&store, "broken:latest", json!({"fail_load": true}));
+        },
+        |c| {
+            c.device = "auto".into();
+            c.load_timeout = Duration::from_secs(30);
+        },
+    )
+    .await;
+    d.client.load("fragile", None).await.unwrap();
+    let ps = d.client.ps().await.unwrap();
+    let devices: Vec<(&str, &str)> = ps
+        .models
+        .iter()
+        .map(|m| (m.name.as_str(), m.device.as_str()))
+        .collect();
+    assert_eq!(devices, [("fragile:latest", "cpu")]);
+    // A model that fails everywhere still reports its error.
+    let (status, body) = api_err(d.client.load("broken", None).await.unwrap_err());
+    assert_eq!(status, 500, "{body:?}");
+    assert!(body.error.contains("cannot load this model"), "{body:?}");
+    d.stop().await;
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("runner") {
@@ -1258,6 +1437,8 @@ fn main() {
         queue_bound_and_cancellation,
         pull_streams_ndjson,
         create_copy_delete,
+        show_modelfile_keeps_a_multi_line_description,
+        gguf_runner_that_dies_on_the_gpu_restarts_on_the_cpu,
         presets_create_show_decide_delete,
     ];
     let rt = tokio::runtime::Runtime::new().unwrap();

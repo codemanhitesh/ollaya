@@ -1,0 +1,46 @@
+{
+ "schema": 1,
+ "suite": "latency-triage",
+ "date": "2026-10-02T03:40:43Z",
+ "ollaya": "0.9.0",
+ "machine": "rtx-4090",
+ "machine_detail": {
+  "id": "rtx-4090",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "threads": 24,
+  "gpus": [
+   {
+    "name": "NVIDIA GeForce RTX 4090",
+    "driver": "616.92",
+    "memory": "24564 MiB"
+   }
+  ],
+  "os": "Linux 6.18.33.2-microsoft-standard-WSL2"
+ },
+ "device": "cuda",
+ "protocol": {
+  "preset": "triage",
+  "questions": 5,
+  "states": 30,
+  "warm": 5,
+  "n": 20,
+  "client": "one request at a time over HTTP to /api/decide, timed by the client; each request a different short message, in turn"
+ },
+ "note": "clef, added with Ollaya 0.9.0; the same protocol and machine as the 2026-10-01 RTX 4090 sweep.",
+ "results": [
+  {
+   "model": "clef:latest",
+   "questions": "triage",
+   "load_ms": 52527.4,
+   "first_request_ms": 53074.0,
+   "answered_by": "clef:latest",
+   "p50_ms": 525.0,
+   "p90_ms": 527.1,
+   "min_ms": 519.8,
+   "eval_p50_ms": 519.1,
+   "input_tokens": 633,
+   "device": "cuda:0",
+   "precision": "F32"
+  }
+ ]
+}

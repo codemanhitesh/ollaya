@@ -8,9 +8,11 @@
 pub mod answer;
 pub mod arbiter;
 pub mod calibration;
+pub mod clef;
 pub mod clm;
 pub mod cygnet;
 pub mod decider;
+pub mod decima;
 pub mod decision;
 pub mod gliclass;
 pub mod jebadiah;
@@ -26,6 +28,7 @@ pub mod pyjson;
 pub mod pyrepr;
 pub mod question;
 pub mod qwen3guard;
+pub mod snap;
 pub mod von;
 pub mod winnow;
 

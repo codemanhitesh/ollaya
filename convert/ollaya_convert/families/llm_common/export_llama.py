@@ -42,7 +42,6 @@ import os
 import struct
 import urllib.request
 
-from . import cases
 from .llama_server import LlamaServer
 from .plan import FixedPlan, server_args, split_point
 
@@ -390,6 +389,10 @@ def server_version(binary):
 
 
 def main():
+    # The case sets need the convert environment (laya's presets); the helpers above do not, so
+    # families/snap/goldens.py imports them on a machine with only llama.cpp and Python.
+    from . import cases
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("layout", choices=["llm-logits", "winnow", "jevk5", "jebadiah", "cygnet"])
     ap.add_argument("--server", required=True, help="the pinned llama-server build the runtime ships")

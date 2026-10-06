@@ -110,6 +110,8 @@ function Install-Ollaya {
         "https://github.com/$repo/releases/latest/download"
     }
     $dest = if ($env:OLLAYA_INSTALL_DIR) { $env:OLLAYA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Ollaya' }
+    # `ollaya update` 0.8.0 and 0.9.0 pass a verbatim path (\\?\C:\...), which Join-Path rejects (#50).
+    $dest = $dest -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
     $archive = 'ollaya-windows-amd64.zip'
 
     $gpu = Get-NvidiaGpu
@@ -139,6 +141,7 @@ function Install-Ollaya {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("ollaya-install-" + [Guid]::NewGuid())
     New-Item -ItemType Directory -Path $tmp | Out-Null
     $stage = $null
+    $aside = Join-Path $dest '.ollaya-old'
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "$base/sha256sum.txt" -OutFile "$tmp\sha256sum.txt"
         $sums = @{}
@@ -162,6 +165,20 @@ function Install-Ollaya {
                 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLower() -ne $Matches[1]) { return $false }
             }
             $true
+        }
+        # Windows cannot delete a program or a library while it runs, such as the ollaya.exe that
+        # runs `ollaya update` and the DirectML.dll it has loaded (#58), but it can move one on the
+        # same volume. So what an install replaces moves into $aside, and every install deletes
+        # what is no longer in use there (in the finally block below).
+        function Move-Aside([string]$path) {
+            if (-not (Test-Path -LiteralPath $path)) { return }
+            New-Item -ItemType Directory -Force -Path $aside | Out-Null
+            $to = Join-Path $aside ('{0}.{1}' -f (Split-Path -Leaf $path), [Guid]::NewGuid().ToString('N'))
+            try {
+                Move-Item -LiteralPath $path -Destination $to
+            } catch {
+                throw "could not replace $path ($($_.Exception.Message)). Close the programs using Ollaya (such as the Ollaya app) and run this script again."
+            }
         }
 
         Get-Verified $archive
@@ -222,16 +239,17 @@ function Install-Ollaya {
             if ((Test-Path $notices) -and -not (Test-Path "$stage\share\doc\ollaya\$($gpu.Pack)")) {
                 Move-Item $notices "$stage\share\doc\ollaya\$($gpu.Pack)"
             }
-        } elseif (Test-Path $libOllaya) {
-            try {
-                Remove-Item -Recurse -Force $libOllaya
-            } catch {
-                throw "could not replace $libOllaya ($($_.Exception.Message)). Close the programs using Ollaya (such as the Ollaya app) and run this script again."
-            }
+        } else {
+            Move-Aside $libOllaya
         }
+        # What is in bin and share moves, not the folders: bin may be a terminal's current directory.
         foreach ($part in 'bin', 'share') {
-            if (Test-Path (Join-Path $dest $part)) { Remove-Item -Recurse -Force (Join-Path $dest $part) }
-            Move-Item (Join-Path $stage $part) (Join-Path $dest $part)
+            $dir = Join-Path $dest $part
+            if (Test-Path $dir) { foreach ($item in Get-ChildItem -LiteralPath $dir -Force) { Move-Aside $item.FullName } }
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            foreach ($item in Get-ChildItem -LiteralPath (Join-Path $stage $part) -Force) {
+                Move-Item -LiteralPath $item.FullName -Destination (Join-Path $dir $item.Name)
+            }
         }
         # lib\ollaya holds llama.cpp's libraries (llama), which run GGUF models, and the GPU pack
         # (cuda_v13 or cuda_v12). A kept GPU pack stays; everything else there is replaced.
@@ -239,13 +257,16 @@ function Install-Ollaya {
             New-Item -ItemType Directory -Force -Path $libOllaya | Out-Null
             foreach ($item in Get-ChildItem -LiteralPath "$stage\lib\ollaya") {
                 $target = Join-Path $libOllaya $item.Name
-                if (Test-Path $target) { Remove-Item -Recurse -Force $target }
+                Move-Aside $target
                 Move-Item $item.FullName $target
             }
         }
     } finally {
         if ($stage) { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        # What is still in use, such as the files of an `ollaya update` running this script,
+        # stays for the next install to delete.
+        Remove-Item -LiteralPath $aside -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     $bin = Join-Path $dest 'bin'

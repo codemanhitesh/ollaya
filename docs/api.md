@@ -496,7 +496,7 @@ The same endpoint loads and unloads models, as Ollama's `/api/generate` does: a 
 | `state` | string \| object \| array | no | – | As in [§5.1](#51-request-body-shared-by-the-decision-endpoints). Absent or `null`: a load or unload request. |
 | `questions` | object | with `state`, unless the model has embedded questions | the model's embedded questions | [§5.2](#52-question-schema). Not allowed without `state` (`missing` issue on `state`). |
 | `preset` | string | no | – | A preset's name ([§7.11](#711-presets)), built-in or custom, in place of `questions`: giving both is a `value_error` issue on `preset`, and it needs `state`. An unknown name is `404 NOT_FOUND`. Ollaya-only. |
-| `images` | array of string | no | `[]` | Images for a vision model (`decider:2b-vision`), as Ollama's `images`: base64, or a base64 `data:` URL. Each item must be a non-empty string (`string_type`, `string_too_short`); not allowed without `state`. The runner decodes them: a vision model reads one PNG image per request, and anything else (another format, more than one image, an image over its size limit, a model that reads no images) is a `422 INVALID_REQUEST` with the reason. |
+| `images` | array of string | no | `[]` | Images for a vision model (`decider:2b-vision`), as Ollama's `images`: base64, or a base64 `data:` URL. Each item must be a non-empty string (`string_type`, `string_too_short`); not allowed without `state`. The runner decodes them: Decider reads one PNG per request; Winnow with a matching projector reads up to 16 ordered PNGs. Unsupported formats, too many images, images over the model/context limits, and models that read no images return `422 INVALID_REQUEST` with the reason. |
 | `keep_alive` | string \| number | no | `OLLAYA_KEEP_ALIVE` (`5m`) | [§6](#6-keep_alive) |
 | `extras` | array of string | no | `[]` | Closed set: `"laya"`. Each value adds a same-named object to every answer. Unknown values are `enum` issues. |
 | `stream` | boolean | no | `false` | Reserved. `/api/decide` does not stream, and `true` is a `stream_unsupported` issue. It is rejected rather than ignored so that a streaming mode can be added later without changing what existing `stream: true` callers receive. |
@@ -1640,12 +1640,18 @@ These are the variables that change API behaviour.
 | `OLLAYA_KEEP_ALIVE` | `5m` | Default `keep_alive` ([§6](#6-keep_alive)) |
 | `OLLAYA_MAX_LOADED_MODELS` | `3` | Loaded-model limit |
 | `OLLAYA_DEVICE` | `auto` | Runner device: `auto` (MLX on the Apple GPU for models with an arch layer in builds with the `mlx` feature, else CUDA if available, else CPU), `cpu`, `cuda`, `cuda:<n>`, `metal` |
+| `OLLAYA_THREADS` | unset | CPU threads for each loaded model: ONNX Runtime's intra-op threads, or llama.cpp's threads for GGUF models. Unset keeps each engine's default: ONNX Runtime's own, and for GGUF models half the CPUs available to the server on x86-64 (about one per physical core), all of them on arm64 |
 | `OLLAYA_MAX_QUEUE` | `512` | Queue bound before `503 QUEUE_FULL` |
 | `OLLAYA_LOAD_TIMEOUT` | `5m` | Load deadline before `500 MODEL_LOAD_FAILED` |
 | `OLLAYA_MODELS` | `~/.ollaya/models` | Model store |
 | `OLLAYA_REGISTRY` | `ollaya.dev` | Default registry host in names |
+| `OLLAYA_HF_ENDPOINT` | unset | Base URL of a Hugging Face endpoint (mirror or enterprise instance) that weight downloads are fetched from instead of `huggingface.co`; falls back to `HF_ENDPOINT`. Blobs are still verified by sha256, so a mirror serving identical bytes cannot corrupt a model. |
+| `OLLAYA_HF_TOKEN` | unset | Ollaya's own Hugging Face access token, sent as `Authorization: Bearer` on weight downloads from a Hugging Face repository, a mirror or an enterprise endpoint included. Never sent to the registry (`ollaya.dev`) or a self-hosted blob host. Needed for private or gated repositories. |
+| `HF_TOKEN` | unset | Used when `OLLAYA_HF_TOKEN` is unset, so a token already set for Python tools works. Sent only to `huggingface.co` itself, never to a mirror (`OLLAYA_HF_ENDPOINT`), so a token shared with other tools is not handed to a third party. |
 | `OLLAYA_LOG` | `info` | Log levels, a [tracing filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `debug` logs every request with its status and duration |
 | `OLLAYA_LOG_DIR` | unset | Log to `<dir>/server.log` instead of stderr (created if missing; appended, never rotated) |
+
+The daemon reads these at startup. The packaged systemd service and the desktop app start `ollaya serve` with their own environment, so set them in the service's `Environment=` lines (or the app's launcher) rather than your shell.
 
 ## 16. Verification checklist
 

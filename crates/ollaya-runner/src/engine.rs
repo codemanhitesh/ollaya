@@ -97,6 +97,8 @@ pub const LAYOUTS: &[&str] = &[
     "decider-vision-v1",
     "nimble-codes-v1",
     "jeeves-markers-v1",
+    "clef-joint-v1",
+    "decima-late-interaction-v1",
     "arbiter-fixed-v1",
 ];
 
@@ -151,6 +153,12 @@ pub fn load(
             files, device, threads,
         )?)),
         "jeeves-markers-v1" => Ok(Box::new(crate::jeeves::JeevesModel::load_files(
+            files, device, threads,
+        )?)),
+        "clef-joint-v1" => Ok(Box::new(crate::clef::ClefModel::load_files(
+            files, device, threads,
+        )?)),
+        "decima-late-interaction-v1" => Ok(Box::new(crate::decima::DecimaModel::load_files(
             files, device, threads,
         )?)),
         "arbiter-fixed-v1" => Ok(Box::new(crate::arbiter::ArbiterModel::load_files(

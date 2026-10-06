@@ -5,8 +5,8 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use ollaya_api::{
-    Answer, DecideAnswer, DecideResponse, DoneReason, LayaExtra, LocalModel, ModelDetails,
-    ModelMetadata, RouterInfo, Routing, RunningModel, ShowResponse, Usage,
+    Answer, CalibrationSpec, DecideAnswer, DecideResponse, DoneReason, LayaExtra, LocalModel,
+    ModelDetails, ModelMetadata, RouterInfo, Routing, RunningModel, ShowResponse, Usage,
 };
 use ollaya_registry::manifest::{ANNOTATION_PRECISION, ANNOTATION_QUANTIZATION, Manifest};
 use ollaya_registry::{Entry, ModelName, Store, media};
@@ -243,11 +243,37 @@ pub fn show(store: &Store, info: &ModelInfo) -> ShowResponse {
             let q = serde_json::to_string_pretty(q).unwrap_or_default();
             modelfile.push_str(&format!("QUESTIONS \"\"\"\n{q}\n\"\"\"\n"));
         }
+        // A calibration layer the model shares with its parent is inherited: FROM brings it back.
+        let parent_calibration = ModelName::parse(&from)
+            .ok()
+            .and_then(|n| store.read_manifest(&n).ok().flatten())
+            .and_then(|p| {
+                p.manifest
+                    .layer(media::CALIBRATION)
+                    .map(|d| d.digest.clone())
+            });
+        if let Some(calibration) = manifest
+            .layer(media::CALIBRATION)
+            .filter(|d| parent_calibration.as_ref() != Some(&d.digest))
+            .and_then(|d| store.read_blob_json::<Value>(d).ok())
+            .and_then(|calibration| {
+                // The create API would discard fields such as temperature_map and temperature_range.
+                // Leave those layers inherited instead of replacing them with a partial calibration.
+                let spec = serde_json::from_value::<CalibrationSpec>(calibration.clone()).ok()?;
+                (serde_json::to_value(spec).ok()? == calibration).then_some(calibration)
+            })
+        {
+            let calibration = serde_json::to_string_pretty(&calibration).unwrap_or_default();
+            modelfile.push_str(&format!("CALIBRATION \"\"\"\n{calibration}\n\"\"\"\n"));
+        }
         if let Some(p) = &precision {
             modelfile.push_str(&format!("PARAMETER precision {p}\n"));
         }
         let description = text(&c["description"]);
-        if !description.is_empty() {
+        if description.contains('\n') {
+            // A `"""` block, as it was written: on one line, the rest would read as directives.
+            modelfile.push_str(&format!("DESCRIPTION \"\"\"\n{description}\n\"\"\"\n"));
+        } else if !description.is_empty() {
             modelfile.push_str(&format!("DESCRIPTION {description}\n"));
         }
     }

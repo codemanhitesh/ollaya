@@ -18,6 +18,7 @@
 
 pub mod cuda_kernels;
 pub mod ffi;
+mod vision;
 
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ use ollaya_decision::cygnet::{self, CygnetConfig};
 use ollaya_decision::jebadiah::{self, JebadiahConfig};
 use ollaya_decision::jevk5::{self, JevK5Config};
 use ollaya_decision::llm_logits::{self, LlmLogitsConfig};
+use ollaya_decision::snap::{self, SnapConfig};
 use ollaya_decision::winnow::{self, WinnowConfig};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -43,6 +45,7 @@ pub const LAYOUTS: &[&str] = &[
     jevk5::LAYOUT,
     jebadiah::LAYOUT,
     cygnet::LAYOUT,
+    snap::LAYOUT,
 ];
 
 /// Tokens per `llama_decode` call and per physical batch: llama-server's defaults, which the
@@ -125,6 +128,12 @@ enum Layout {
         post: Vec<Token>,
         bos: Option<Token>,
     },
+    Snap {
+        cfg: Box<SnapConfig>,
+        /// Tokens of the template before and after the user message (system message included).
+        pre: Vec<Token>,
+        post: Vec<Token>,
+    },
 }
 
 /// One question, ready to evaluate.
@@ -161,6 +170,7 @@ struct Context {
 /// The model and its context; freed together.
 struct Handles {
     api: &'static Api,
+    device: Option<ffi::Device>,
     model: NonNull<c_void>,
     context: Mutex<Context>,
 }
@@ -187,6 +197,8 @@ struct Vocab {
 
 /// A GGUF model loaded in llama.cpp.
 pub struct LlamaModel {
+    // Must drop before handles: projector borrows the text model.
+    vision: Option<vision::Vision>,
     handles: Handles,
     vocab: Vocab,
     layout: Layout,
@@ -548,6 +560,18 @@ fn prepare(vocab: &Vocab, decision: &Value) -> Result<Layout, Error> {
                 bos,
             }
         }
+        Some(snap::LAYOUT) => {
+            let cfg: SnapConfig = serde_json::from_value(decision.clone()).map_err(parse_error)?;
+            cfg.validate().map_err(bad)?;
+            // Only the template's own text may produce control tokens, as in snap.
+            let pre = vocab.tokenize(&cfg.template.pre, false, true)?;
+            let post = vocab.tokenize(&cfg.template.post, false, true)?;
+            Layout::Snap {
+                cfg: Box::new(cfg),
+                pre,
+                post,
+            }
+        }
         other => {
             return Err(model_error(format!(
                 "the llama engine cannot run layout {other:?}"
@@ -562,6 +586,7 @@ fn prepare(vocab: &Vocab, decision: &Value) -> Result<Layout, Error> {
         Layout::JevK5(cfg) => vec![&cfg.labels],
         Layout::Jebadiah(cfg) => vec![&cfg.labels],
         Layout::Cygnet { cfg, .. } => vec![&cfg.labels],
+        Layout::Snap { cfg, .. } => vec![&cfg.labels],
     };
     for table in tables {
         for (s, &id) in table.strings.iter().zip(&table.ids) {
@@ -676,6 +701,7 @@ impl LlamaModel {
         };
         let layout = prepare(&vocab, &value)?;
         let model = LlamaModel {
+            vision: None,
             handles,
             vocab,
             layout,
@@ -685,6 +711,134 @@ impl LlamaModel {
         };
         tracing::info!(model = %model.describe(), device = %model.device, layout = %d.layout, "loaded");
         Ok(model)
+    }
+
+    /// Attach a matching GGUF projector. Text-only loads need no libmtmd.
+    pub fn load_projector(
+        &mut self,
+        projector: &Path,
+        libs: &Libraries,
+        threads: Option<usize>,
+    ) -> Result<(), Error> {
+        if !matches!(self.layout, Layout::Winnow(_)) {
+            return Err(model_error("GGUF image support requires winnow-v1"));
+        }
+        self.vision = Some(vision::Vision::load(
+            &libs.dir,
+            projector,
+            self.handles.model.as_ptr(),
+            self.handles.device.unwrap_or(std::ptr::null_mut()),
+            threads.map_or_else(default_threads, |t| t as i32),
+        )?);
+        Ok(())
+    }
+
+    fn run_winnow_images(
+        &self,
+        state: &Value,
+        questions: &Value,
+        images: &[Vec<u8>],
+    ) -> Result<Output, Error> {
+        let Layout::Winnow(cfg) = &self.layout else {
+            return Err(crate::vision::ImageError::Unsupported.into());
+        };
+        let vision = self
+            .vision
+            .as_ref()
+            .ok_or(crate::vision::ImageError::Unsupported)?;
+        let prompts = cfg.questions(questions)?;
+        let (state_text, state_tokens, state_truncated) =
+            self.vocab
+                .cut(winnow::state_text(state)?, cfg.max_state_tokens, true)?;
+        let prefix = winnow::image_prefix(&state_text, images.len());
+        let mut ctx = self
+            .handles
+            .context
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // Projector and llama context share this mutex; no cache is reused between image requests.
+        let chunks = vision.prefix(&prefix, images)?;
+        let (head_positions, prefix_tail) = chunks.tail()?;
+        // mtmd tokenizes the text after the final image separately from synthetic image
+        // delimiters. Keep those delimiter IDs and retokenize only the actual text tail
+        // together with each question, preserving whitespace merges without reprocessing images.
+        let text_tail = prefix
+            .rsplit_once("<__media__>")
+            .ok_or_else(|| model_error("missing image marker"))?
+            .1;
+        let text_ids = self.vocab.tokenize(text_tail, false, true)?;
+        let mut shared = prefix_tail.len();
+        let mut rows = Vec::with_capacity(prompts.len());
+        for (qid, q) in prompts {
+            let question_ids =
+                self.vocab
+                    .tokenize(&(text_tail.to_owned() + &q.suffix), false, true)?;
+            let tail = replace_image_text_tail(&prefix_tail, &text_ids, question_ids)?;
+            if head_positions + tail.len() >= self.settings.n_ctx {
+                let message = format!(
+                    "question {qid:?}: image/state prefix and question exceed {} context positions",
+                    self.settings.n_ctx
+                );
+                return Err(ollaya_decision::Error::invalid(message).into());
+            }
+            let common = prefix_tail
+                .iter()
+                .zip(&tail)
+                .take_while(|(a, b)| a == b)
+                .count();
+            shared = shared.min(common);
+            rows.push((q, tail));
+        }
+        let positions = head_positions + shared;
+        self.clear(&mut ctx);
+        let result = (|| {
+            chunks.evaluate_head(ctx.ptr.as_ptr())?;
+            self.decode(&mut ctx, &prefix_tail[..shared], head_positions, false)?;
+            let mut output = Vec::with_capacity(rows.len());
+            let mut input_tokens = 0;
+            for (q, tail) in rows {
+                let suffix = &tail[shared..];
+                // SAFETY: this request owns the context lock; retain only its image/state prefix.
+                if !unsafe {
+                    (self.handles.api.llama_memory_seq_rm)(ctx.memory, 0, positions as i32, -1)
+                } {
+                    return Err(model_error("could not retain image prefix"));
+                }
+                self.decode(&mut ctx, suffix, positions, true)?;
+                // SAFETY: decode produced vocabulary logits for the final suffix token.
+                let ptr = unsafe { (self.handles.api.llama_get_logits_ith)(ctx.ptr.as_ptr(), -1) };
+                if ptr.is_null() {
+                    return Err(model_error("llama.cpp returned no logits"));
+                }
+                // SAFETY: the non-null row contains n_vocab contiguous f32 logits from the
+                // final suffix token. The context lock keeps it alive and prevents another
+                // decode from invalidating it while these logits are read.
+                let logits = unsafe { std::slice::from_raw_parts(ptr, self.vocab.n_tokens) };
+                let selected = q
+                    .label_ids
+                    .iter()
+                    .map(|&id| {
+                        logits
+                            .get(id as usize)
+                            .copied()
+                            .ok_or_else(|| model_error("label outside vocabulary"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                output.push(QuestionOutput {
+                    logits: selected,
+                    act_logits: None,
+                });
+                input_tokens += positions + suffix.len();
+            }
+            Ok(Output {
+                questions: output,
+                input_tokens,
+                state_tokens,
+                state_truncated,
+            })
+        })();
+        self.clear(&mut ctx);
+        result
     }
 
     /// `llama_model_desc`: architecture, size and type (`gemma4 12B Q8_0`).
@@ -848,6 +1002,45 @@ impl LlamaModel {
                         && ids.first() != Some(&b)
                     {
                         ids.insert(0, b);
+                    }
+                    if ids.len() >= n_ctx {
+                        return Err(ollaya_decision::Error::invalid(format!(
+                            "question {qid:?}: the prompt is {} tokens, and the model's context \
+                             holds {n_ctx}; shorten the state, the question or its options",
+                            ids.len()
+                        ))
+                        .into());
+                    }
+                    rows.push((
+                        qid,
+                        Row {
+                            ids,
+                            p: 0,
+                            candidates: q.label_ids.iter().map(|&t| t as Token).collect(),
+                            wire_order: q.wire_order,
+                        },
+                    ));
+                }
+                Ok(Encoded {
+                    rows,
+                    state_tokens,
+                    state_truncated: false,
+                })
+            }
+            Layout::Snap { cfg, pre, post } => {
+                // One cold pass per question. No state cut: a prompt that does not fit the
+                // context is rejected.
+                let (_, prompts) = cfg.questions(state, questions)?;
+                let state_tokens = vocab
+                    .tokenize(&snap::render_state_toon(state), false, false)?
+                    .len();
+                let n_ctx = self.settings.n_ctx;
+                let mut rows = Vec::with_capacity(prompts.len());
+                for (qid, q) in prompts {
+                    let user = vocab.tokenize(&q.user, false, false)?;
+                    let mut ids = Vec::with_capacity(pre.len() + user.len() + post.len());
+                    for part in [pre, &user, post] {
+                        ids.extend_from_slice(part);
                     }
                     if ids.len() >= n_ctx {
                         return Err(ollaya_decision::Error::invalid(format!(
@@ -1141,6 +1334,7 @@ fn load_on(
     }
     Ok(Handles {
         api,
+        device,
         model,
         context: Mutex::new(Context {
             ptr: ctx,
@@ -1161,7 +1355,39 @@ pub fn split_point(ids: &[Token], reference: &[Token]) -> usize {
     lcp.min(ids.len().saturating_sub(1))
 }
 
+/// Preserve mtmd's synthetic image delimiters while replacing its final text segment.
+fn replace_image_text_tail(
+    prefix: &[Token],
+    text: &[Token],
+    question: Vec<Token>,
+) -> Result<Vec<Token>, Error> {
+    let Some(delimiters) = prefix.strip_suffix(text) else {
+        return Err(model_error(
+            "multimodal text tail differs from standalone tokenization",
+        ));
+    };
+    let mut tail = Vec::with_capacity(delimiters.len() + question.len());
+    tail.extend_from_slice(delimiters);
+    tail.extend(question);
+    Ok(tail)
+}
+
 impl crate::engine::Engine for LlamaModel {
+    fn reads_images(&self) -> bool {
+        self.vision.is_some()
+    }
+    fn run_images(
+        &self,
+        state: &Value,
+        questions: &Value,
+        images: &[Vec<u8>],
+    ) -> Result<Output, Error> {
+        if images.is_empty() {
+            return self.run_json(state, questions);
+        }
+        self.run_winnow_images(state, questions, images)
+    }
+
     fn run(&self, state: &Value, questions: &Questions) -> Result<Output, Error> {
         // The llama layouts read the questions as the daemon sent them.
         let raw: Map<String, Value> = questions
@@ -1179,6 +1405,15 @@ impl crate::engine::Engine for LlamaModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_tail_preserves_delimiters_and_retokenized_boundary() {
+        assert_eq!(
+            replace_image_text_tail(&[900, 1, 2], &[1, 2], vec![1, 3, 4]).unwrap(),
+            vec![900, 1, 3, 4]
+        );
+        assert!(replace_image_text_tail(&[900, 1, 2], &[1, 7], vec![1, 3]).is_err());
+    }
 
     #[test]
     fn split_point_leaves_a_token_to_evaluate() {

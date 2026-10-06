@@ -193,9 +193,11 @@ function ModelsTable({ model }: { model: Model }) {
           </tbody>
         </table>
       </div>
-      <p class="mt-2 text-[13px] text-muted">
-        Each model carries fp16 and fp32 graphs over one weights file, and loads fp16 on a CUDA GPU and fp32 on CPU.
-      </p>
+      {featuredTags(model).some((t) => t.precision === 'auto') && (
+        <p class="mt-2 text-[13px] text-muted">
+          Each model carries fp16 and fp32 graphs over one weights file, and loads fp16 on a CUDA GPU and fp32 on CPU.
+        </p>
+      )}
     </section>
   )
 }
