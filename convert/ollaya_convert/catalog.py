@@ -100,7 +100,28 @@ def _arbiter_weights(base, base_commit, shards):
             "head.pt": "head.pt"}
 
 
-ARBITER_LICENSE = "Apache-2.0 (LoRA adapter and head) and the Gemma Terms of Use (Gemma 3 base model)"
+def _arbiter12b_weights(base, base_commit):
+    """Graph location -> upstream file of Arbiter v4 12B: the base model's single safetensors from the
+    (non-gated) Gemma 4 mirror, the adapter and head.pt from the Arbiter v4 repository."""
+    return {"model.safetensors": (base, base_commit, "model.safetensors"),
+            "adapter_model.safetensors": "adapter_model.safetensors",
+            "head.pt": "head.pt"}
+
+
+ARBITER_LICENSE = "Apache-2.0 (LoRA adapter and head) and the Gemma Terms of Use (Gemma base model)"
+
+ARBITER12B_LICENSE = "Apache-2.0 (LoRA adapter and head) and the Gemma Terms of Use (Gemma 4 base model)"
+
+
+def _arbiter12b_license(repo, base):
+    return ("Arbiter v4 by Codekins Pvt Ltd · Zyot Lab (https://huggingface.co/%s)\n"
+            "LoRA adapter and 28-slot pointer head: Apache-2.0.\n"
+            "Base model: %s by Google DeepMind (https://huggingface.co/google/%s), under the Gemma Terms of Use "
+            "(https://ai.google.dev/gemma/terms) and the Gemma Prohibited Use Policy "
+            "(https://ai.google.dev/gemma/prohibited_use_policy).\n"
+            "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms.\n"
+            "The adapter and the head are licensed under the Apache License, Version 2.0:\n\n"
+            % (repo, base, base)) + LICENSE_APACHE
 
 
 def _arbiter_license(repo, base):
@@ -348,6 +369,32 @@ CATALOG = {
                                   "tokenizer.json")),
         },
         "aliases": {"latest": "4b"},
+        "parity": "PARITY-PENDING",
+    },
+    "arbiter12b": {
+        "namespace": "library",
+        "model": "arbiter12b",
+        "family": "arbiter12b",
+        "author": "Codekins Pvt Ltd · Zyot Lab",
+        "license": ARBITER12B_LICENSE,
+        "license_text": _arbiter12b_license("hiteshluke/arbiter-v4-12b", "gemma-4-12b-it"),
+        "tags": {
+            # The tokenizer is the base mirror's (unsloth/gemma-4-12b-it, non-gated); pulled tokenless.
+            "12b": dict(_wl("arbiter-v4-12b", "hiteshluke/arbiter-v4-12b",
+                            "c1cf6feb05e2f78bf33b1cc2370bf495d0b824c8",
+                            "Arbiter v4: a LoRA and a fixed 28-slot head on Gemma 4 12B, one forward pass per "
+                            "question. Answers noul, choices of up to 16 options and scores (10 levels as trained, "
+                            "other level counts asked as a choice over the levels). BoolQ 0.892; Ollaya "
+                            "typed-decisions 0.640.",
+                            "12B", 8192, ["multilingual"], license=ARBITER12B_LICENSE,
+                            wl_dir=os.path.join(OUT, "arbiter-v4-12b"),
+                            license_text=_arbiter12b_license("hiteshluke/arbiter-v4-12b", "gemma-4-12b-it"),
+                            weights=_arbiter12b_weights("unsloth/gemma-4-12b-it",
+                                                        "55cdba0740a9765956f49501f689a66b098feda3")),
+                        tokenizer=("unsloth/gemma-4-12b-it", "55cdba0740a9765956f49501f689a66b098feda3",
+                                   "tokenizer.json")),
+        },
+        "aliases": {"latest": "12b"},
         "parity": "PARITY-PENDING",
     },
     "decision": {
