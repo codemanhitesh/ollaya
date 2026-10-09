@@ -63,8 +63,13 @@ the 0.640 checkpoint):
 | `head.pt` (28-slot, BF16) | `8bf9f80399aeb479…` | ~215 KB |
 | `head_meta.json` (verbalizer, calibration_temp) | `45f065c76ecc1002…` | — |
 
-(Full sha256s: read them from the repo's LFS pointers at export time.) Still TODO: a **non-gated Gemma-4 base
-mirror** pinned by commit + sha for the manifest (base weights, like the 4B's `unsloth/gemma-3-4b-it@…`).
+(Full sha256s: read them from the repo's LFS pointers at export time.)
+
+**Non-gated base mirror found:** `unsloth/gemma-4-12b-it` @ `55cdba0740a9765956f49501f689a66b098feda3`
+(gated=False) — a single `model.safetensors` (bf16, ~23.9 GB, sha256 `5a84cb313260ac44…`) + `tokenizer.json`
+(sha256 `cc8d3a0ce36466cc…`). Wired into `ref.MODELS`. TODO before PR: sha-match its text tensors against
+`google/gemma-4-12b-it` (as the 4B doc does). **Export note:** the fp32 reference/trace of a 12B is ~48 GB —
+more than T4×2 (32 GB); run the ONNX export with CPU/offload or on a larger GPU (the bf16 parity fits T4×2).
 
 ## Files to add (mirrors the merged `arbiter` family)
 

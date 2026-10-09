@@ -27,10 +27,12 @@ MODELS = {
     "arbiter-v4-12b": {
         "repo": "hiteshluke/arbiter-v4-12b",
         "revision": "c1cf6feb05e2f78bf33b1cc2370bf495d0b824c8",
-        "base": "google/gemma-4-12b-it",
-        # TODO(base pin): fill from a NON-GATED mirror (sha-matched) for the tokenless runtime pull.
-        "base_revision": None,
-        "base_files": None,     # e.g. ["model-0000i-of-0000N.safetensors", ...]
+        # Non-gated mirror of google/gemma-4-12b-it (gated=False), so the runtime pulls tokenless.
+        # A single model.safetensors (bf16, ~23.9 GB) + tokenizer.json. TODO(verify): sha-match the text
+        # tensors against google/gemma-4-12b-it before the PR, as the 4B doc does for its base.
+        "base": "unsloth/gemma-4-12b-it",
+        "base_revision": "55cdba0740a9765956f49501f689a66b098feda3",
+        "base_files": ["model.safetensors"],
     },
 }
 MAX_ROW_TOKENS = 8192
