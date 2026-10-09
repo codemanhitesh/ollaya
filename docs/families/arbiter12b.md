@@ -119,3 +119,33 @@ only affects the `score` type; noul/choice are unaffected.
 
 The 4B [`arbiter`](arbiter.md) family (PR #49, merged 2026-10-06) is the exact template. This is the same port
 with a newer base and a 4-slot-wider score block.
+
+## To finish & submit (runbook)
+
+All code is landed (Python layout/ref/export/goldens/parity/check + `llm_common/gemma4.py`; Rust
+decision/runner/engine/parity; catalog). What remains needs a dev box with `cargo` and enough RAM/GPU:
+
+1. **Verify Rust** (no local cargo was available when this was written):
+   ```
+   cargo fmt --all && cargo clippy --workspace --all-targets --locked -- -D warnings
+   cargo test --workspace --locked     # runs the arbiter12b decision unit tests
+   ```
+2. **Check the layout port vs the reference prompts** (no model, fast):
+   ```
+   python -m ollaya_convert.families.arbiter12b.check <base-snapshot-of-unsloth/gemma-4-12b-it>
+   ```
+3. **Export the weightless ONNX** (fp32 ~48 GB — `--device auto` to split GPUs+CPU, or a >=64 GB box):
+   ```
+   python -m ollaya_convert.families.arbiter12b.export arbiter-v4-12b --out out/arbiter-v4-12b --device auto
+   ```
+   export.py prints `eager graph vs reference` first (must be ~1e-6) before it writes `model.onnx`.
+4. **Goldens + parity** (the 0.001 gate):
+   ```
+   python -m ollaya_convert.families.arbiter12b.goldens out/arbiter-v4-12b --device auto
+   cargo run --release -p ollaya-runner --example parity_arbiter12b -- out/arbiter-v4-12b out/goldens-arbiter-v4-12b.jsonl cpu
+   ```
+   Accept only if every decision matches and slot scores are within 1e-3. Never loosen the tolerance.
+5. **Before the PR:** sha-match `unsloth/gemma-4-12b-it` text tensors vs `google/gemma-4-12b-it`; set
+   `ref.ARBITER_GIT["commit"]`; optionally fit per-type temperatures into `calibration.json`.
+6. **PR** `codemanhitesh/ollaya:add-arbiter12b-family` → `ollaya-dev/ollaya` (as the 4B PR #49). Maintainers
+   run the eval on their GPUs; nothing is submitted until the PR is opened and merged.
