@@ -1,0 +1,1 @@
+"""arbiter12b (Arbiter v4, Gemma 4 12B + LoRA + a fixed 28-slot pointer head over the final-position hidden state). The 12B sibling of the `arbiter` family; score block is 10 trained levels, so 28 slots (24 + 4)."""
