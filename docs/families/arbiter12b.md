@@ -43,6 +43,12 @@ Base is gated on the Hub (Ollaya pulls tokenless), so the manifest must point at
 by commit + sha256 (as the 4B points at `unsloth/gemma-3-4b-it@…`). Find/confirm an `unsloth/gemma-4-12b-it`
 (or equivalent) mirror whose read files match `google/gemma-4-12b-it` by LFS sha256.
 
+**Status: `gemma4.py` recompute is written and validated bit-exact** against transformers
+`Gemma4UnifiedTextModel.forward` (max abs diff 0.0 on a tiny random Gemma-4 that exercises sliding + full
+attention, the KV-sharing tail, dual partial RoPE, `v_norm`, and the per-layer `layer_scalar`). It reuses the
+HF submodules and re-expresses only the cache-free additive masks, so it matches by construction. The dominant
+risk of this port is retired.
+
 ## Weights (author's HF repo — never re-hosted)
 
 Invariant (CLAUDE.md): Ollaya never re-hosts weights; it reads the author's repo unmodified at a pinned commit.
@@ -55,7 +61,10 @@ on the ckpts repo) and record the commit + file sha256s here, like `arbiter.md`'
 
 - [x] `convert/ollaya_convert/families/arbiter12b/layout.py` — 28-slot layout (landed, validated).
 - [x] `convert/ollaya_convert/families/arbiter12b/__init__.py`.
-- [ ] `convert/ollaya_convert/families/llm_common/gemma4.py` — **Gemma 4 forward recompute** (the big one).
+- [x] `convert/ollaya_convert/families/llm_common/gemma4.py` — **Gemma 4 forward recompute** (the big one).
+      **Landed + validated bit-exact** (max abs diff 0.0) vs transformers' own `Gemma4UnifiedTextModel.forward`
+      on a tiny random model exercising sliding + full attention, the KV-sharing tail, dual RoPE, `v_norm` and
+      `layer_scalar`. It reuses the HF decoder layers/rotary/norm and only re-expresses the cache-free masks.
 - [ ] `convert/ollaya_convert/families/arbiter12b/{export.py, ref.py, goldens.py, parity.py, check.py}` — copy
       from `arbiter/`, swap `gemma3` → `gemma4`, 24 → 28, 6 → 10 score levels, point at the 12B weights.
 - [ ] `crates/ollaya-decision/src/arbiter12b.rs` — copy `arbiter.rs`; `SCORE_LEVELS 6 → 10`,
