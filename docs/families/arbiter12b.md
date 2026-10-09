@@ -52,10 +52,19 @@ risk of this port is retired.
 ## Weights (author's HF repo — never re-hosted)
 
 Invariant (CLAUDE.md): Ollaya never re-hosts weights; it reads the author's repo unmodified at a pinned commit.
-Need a **clean public** repo (we have `hiteshluke/arbiter-v4-12b-ckpts`, currently a multi-step ckpt dump) with
-exactly: `adapter_model.safetensors` (F32 LoRA) + `head.pt` (28-slot, BF16) + `head_meta.json` (verbalizer,
-calibration_temp) at a **tagged commit**. Action: publish a tidy `hiteshluke/arbiter-v4-12b` (or a release tag
-on the ckpts repo) and record the commit + file sha256s here, like `arbiter.md`'s base-repo table.
+
+**Done.** Clean public repo [`hiteshluke/arbiter-v4-12b`](https://huggingface.co/hiteshluke/arbiter-v4-12b)
+published at pinned commit **`c1cf6feb05e2f78bf33b1cc2370bf495d0b824c8`** (step-2500 adapter + ema-final head,
+the 0.640 checkpoint):
+
+| File | sha256 | Bytes |
+|---|---|---|
+| `adapter_model.safetensors` (F32 LoRA) | `88f16d44292b3ced…` | 524,648,560 |
+| `head.pt` (28-slot, BF16) | `8bf9f80399aeb479…` | ~215 KB |
+| `head_meta.json` (verbalizer, calibration_temp) | `45f065c76ecc1002…` | — |
+
+(Full sha256s: read them from the repo's LFS pointers at export time.) Still TODO: a **non-gated Gemma-4 base
+mirror** pinned by commit + sha for the manifest (base weights, like the 4B's `unsloth/gemma-3-4b-it@…`).
 
 ## Files to add (mirrors the merged `arbiter` family)
 
