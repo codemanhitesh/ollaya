@@ -1,0 +1,345 @@
+//! `arbiter-fixed-v2`: Arbiter v4 12B by Codekins (a LoRA on Gemma 4 12B IT plus a fixed 28-slot head),
+//! the 12B sibling of [`crate::arbiter`]. Identical layout, except the trained score block is 10 digit
+//! levels (`0..9`), so the head is 28 slots and a score is read from the digit slots only when it has
+//! exactly 10 levels (any other count is asked as a choice, as in the 4B).
+//!
+//! ```text
+//! [bos] tok("State: {render(state)}\n\nQuestion: {render(instructions)}\n\n"
+//!           "Options:\n{block}\n\nAnswer:")
+//!   noul    block = "T. Yes / True\nF. No / False"
+//!   choice  block = "A. {option 0}\nB. {option 1}\n..."   1..=16 options, letters A..P
+//!   score   block = "0\n1\n2\n...\n9"                      exactly 10 levels (the trained block)
+//!   score   block = "A. {level 0}\nB. {level 1}\n..."      any other count, 1..=16 levels
+//! ```
+//!
+//! The graph returns the head's 28 raw slot scores at the row's last position; a question's option
+//! logits are the scores at its slots (`decision.json` `slots`): noul `[F, T]`, choice `A..`, a
+//! 10-level score `0..9`, any other score `A..`. Requests the fixed head cannot answer (a choice over
+//! 16 options, a score over 16 levels, a row over `max_row_tokens`) are rejected, never truncated.
+
+use std::fmt::Write;
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::Error;
+use crate::kev::{option_text, render};
+use crate::layout::TokenEncoder;
+use crate::question::{QType, Question, Questions};
+
+pub const LAYOUT: &str = "arbiter-fixed-v2";
+
+/// The choice letters, in slot order.
+const LETTERS: &[u8; 16] = b"ABCDEFGHIJKLMNOP";
+const NOUL_BLOCK: &str = "T. Yes / True\nF. No / False";
+const SCORE_BLOCK: &str = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9";
+const SCORE_LEVELS: usize = 10;
+
+/// Token ids, as `decision.json` declares them.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Arbiter12bTokens {
+    /// Starts every row (`<bos>`).
+    pub bos: u32,
+    pub pad: u32,
+}
+
+/// The head slots of each question type's option logits, in Ollaya's option order.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Arbiter12bSlots {
+    /// `[false, true]`: the slots of `F` and `T`.
+    pub noul: Vec<usize>,
+    /// Option j of a choice reads `choice[j]` (letter j).
+    pub choice: Vec<usize>,
+    /// Level j of a score reads `score[j]` (digit j).
+    pub score: Vec<usize>,
+}
+
+/// The layout as `decision.json` declares it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Arbiter12bLayout {
+    /// A longer row is rejected.
+    pub max_row_tokens: usize,
+    pub special_tokens: Arbiter12bTokens,
+    /// Scores per row in the graph's output.
+    pub num_slots: usize,
+    pub slots: Arbiter12bSlots,
+}
+
+/// One question's row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arbiter12bRow {
+    pub ids: Vec<u32>,
+    /// Where the head is read (the last position).
+    pub last_pos: usize,
+    /// The slots of the question's option logits, in option order.
+    pub slots: Vec<usize>,
+}
+
+impl Arbiter12bLayout {
+    /// Reject configurations this layout cannot run.
+    pub fn validate(&self) -> Result<(), Error> {
+        let s = &self.slots;
+        let ok = self.max_row_tokens > 0
+            && s.noul.len() == 2
+            && (1..=LETTERS.len()).contains(&s.choice.len())
+            && s.score.len() == SCORE_LEVELS
+            && s.noul
+                .iter()
+                .chain(&s.choice)
+                .chain(&s.score)
+                .all(|&i| i < self.num_slots);
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::invalid(format!(
+                "max_row_tokens={} and slots {s:?} do not fit a {}-slot head",
+                self.max_row_tokens, self.num_slots
+            )))
+        }
+    }
+
+    /// Most options a choice (or levels a score) can have.
+    pub fn max_options(&self) -> usize {
+        self.slots.choice.len()
+    }
+
+    /// A choice block over `texts` (letters A.. in order) and its slots, or `TOO_MANY_OPTIONS`.
+    fn choice_block(&self, qid: &str, texts: Vec<String>) -> Result<(String, Vec<usize>), Error> {
+        if texts.len() > self.max_options() {
+            return Err(Error::TooManyOptions {
+                question: qid.to_owned(),
+                options: texts.len(),
+                head_max_len: self.max_options(),
+            });
+        }
+        let mut block = String::new();
+        for (i, text) in texts.iter().enumerate() {
+            let sep = if i > 0 { "\n" } else { "" };
+            let letter = char::from(LETTERS[i]);
+            let _ = write!(block, "{sep}{letter}. {text}");
+        }
+        Ok((block, self.slots.choice[..texts.len()].to_vec()))
+    }
+
+    /// One question's instructions, option block and slots, validated as the reference does.
+    pub fn render_question(
+        &self,
+        qid: &str,
+        q: &Question,
+    ) -> Result<(String, String, Vec<usize>), Error> {
+        let bad = |msg: &str| Error::invalid(format!("question {qid:?}: {msg}"));
+        let criteria = q.definition.get("criteria").filter(|c| !c.is_null());
+        let (block, slots) = match q.qtype {
+            QType::Noul => {
+                if criteria.is_some_and(|c| !c.is_object()) {
+                    return Err(bad("noul criteria must be an object"));
+                }
+                (NOUL_BLOCK.to_owned(), self.slots.noul.clone())
+            }
+            QType::Choice => {
+                let m = match criteria {
+                    Some(Value::Object(m)) if !m.is_empty() => m,
+                    _ => return Err(bad("choice criteria must be a non-empty object")),
+                };
+                let texts = m.iter().map(|(name, d)| option_text(name, Some(d)));
+                self.choice_block(qid, texts.collect())?
+            }
+            QType::Score => match criteria.and_then(Value::as_array) {
+                // The trained block: digits 0..9, the level texts not in the prompt.
+                Some(levels) if levels.len() == SCORE_LEVELS => {
+                    (SCORE_BLOCK.to_owned(), self.slots.score.clone())
+                }
+                // Any other count: asked as a choice over the levels, in order.
+                Some(levels) if !levels.is_empty() => {
+                    self.choice_block(qid, levels.iter().map(render).collect())?
+                }
+                _ => return Err(bad("score criteria must be a non-empty list of levels")),
+            },
+        };
+        let instructions = render(q.definition.get("instructions").unwrap_or(&Value::Null));
+        Ok((instructions, block, slots))
+    }
+
+    /// Every question's row, in request order. All questions are validated before any is tokenized.
+    pub fn rows(
+        &self,
+        enc: &dyn TokenEncoder,
+        state: &Value,
+        questions: &Questions,
+    ) -> Result<Vec<Arbiter12bRow>, Error> {
+        let rendered = questions
+            .iter()
+            .map(|(qid, q)| self.render_question(qid, q))
+            .collect::<Result<Vec<_>, _>>()?;
+        let state_text = render(state);
+        questions
+            .keys()
+            .zip(rendered)
+            .map(|(qid, (instructions, block, slots))| {
+                let prompt = format!("State: {state_text}\n\nQuestion: {instructions}\n\n");
+                let text = format!("{prompt}Options:\n{block}\n\nAnswer:");
+                let mut ids = vec![self.special_tokens.bos];
+                ids.extend(enc.encode(&text)?);
+                if ids.len() > self.max_row_tokens {
+                    return Err(Error::invalid(format!(
+                        "question {qid:?}: the row is {} tokens; this model reads up to {}",
+                        ids.len(),
+                        self.max_row_tokens
+                    )));
+                }
+                Ok(Arbiter12bRow {
+                    last_pos: ids.len() - 1,
+                    ids,
+                    slots,
+                })
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// One id per char, so rows can be read back.
+    struct Chars;
+
+    impl TokenEncoder for Chars {
+        fn encode(&self, text: &str) -> Result<Vec<u32>, Error> {
+            Ok(text.chars().map(u32::from).collect())
+        }
+    }
+
+    fn text(ids: &[u32]) -> String {
+        ids.iter()
+            .map(|&i| char::from_u32(i).unwrap_or('#'))
+            .collect()
+    }
+
+    fn layout(max_row_tokens: usize) -> Arbiter12bLayout {
+        serde_json::from_value(json!({
+            "max_row_tokens": max_row_tokens,
+            "special_tokens": {"bos": 2, "pad": 0},
+            "num_slots": 28,
+            "slots": {"noul": [1, 0],
+                      "choice": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+                      "score": [18, 19, 20, 21, 22, 23, 24, 25, 26, 27]},
+        }))
+        .unwrap()
+    }
+
+    fn rows(l: &Arbiter12bLayout, state: Value, questions: Value) -> Result<Vec<Arbiter12bRow>, Error> {
+        l.rows(&Chars, &state, &crate::parse_questions(&questions).unwrap())
+    }
+
+    /// A choice with `n` options named `o0`, `o1`, ...
+    fn choice(n: usize) -> Value {
+        let mut criteria = serde_json::Map::new();
+        for i in 0..n {
+            criteria.insert(format!("o{i}"), Value::Null);
+        }
+        json!({"type": "choice", "instructions": "x", "criteria": criteria})
+    }
+
+    #[test]
+    fn builds_the_training_prompt() {
+        let l = layout(8192);
+        let state = json!({"order": "A-104", "amount": 1.0});
+        let questions = json!({
+            "n": {"type": "noul", "instructions": "Refund?", "criteria": {"true": "money back"}},
+            "c": {"type": "choice", "instructions": {"task": "route"},
+                  "criteria": {"billing": "charges", "tech": {"covers": ["bugs"]},
+                               "other": null, "x": ""}},
+            "s": {"type": "score", "instructions": "How upset?",
+                  "criteria": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]},
+        });
+        let r = rows(&l, state, questions).unwrap();
+        let head = "State: order: A-104\namount: 1.0\n\nQuestion: ";
+        assert_eq!(r[0].ids[0], 2);
+        let noul = "Refund?\n\nOptions:\nT. Yes / True\nF. No / False\n\nAnswer:";
+        assert_eq!(text(&r[0].ids[1..]), format!("{head}{noul}"));
+        let choice = "A. billing: charges\nB. tech: covers:\n  - bugs\nC. other\nD. x";
+        assert_eq!(
+            text(&r[1].ids[1..]),
+            format!("{head}task: route\n\nOptions:\n{choice}\n\nAnswer:")
+        );
+        let score = "How upset?\n\nOptions:\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n\nAnswer:";
+        assert_eq!(text(&r[2].ids[1..]), format!("{head}{score}"));
+        assert!(r.iter().all(|row| row.last_pos == row.ids.len() - 1));
+        assert_eq!(r[0].slots, [1, 0]);
+        assert_eq!(r[1].slots, [2, 3, 4, 5]);
+        assert_eq!(r[2].slots, [18, 19, 20, 21, 22, 23, 24, 25, 26, 27]);
+    }
+
+    /// A score with `n` levels named `level 0`, `level 1`, ...
+    fn score(n: usize) -> Value {
+        let levels: Vec<String> = (0..n).map(|i| format!("level {i}")).collect();
+        json!({"type": "score", "instructions": "x", "criteria": levels})
+    }
+
+    #[test]
+    fn asks_other_scores_as_a_choice() {
+        let l = layout(8192);
+        for n in [1, 2, 4, 5, 6, 7, 9, 16] {
+            let r = rows(&l, json!("s"), json!({"q": score(n)})).unwrap();
+            assert_eq!(r[0].slots, (2..2 + n).collect::<Vec<_>>());
+            let block: Vec<String> = (0..n)
+                .map(|i| format!("{}. level {i}", char::from(LETTERS[i])))
+                .collect();
+            let want = format!("\n\nOptions:\n{}\n\nAnswer:", block.join("\n"));
+            assert!(text(&r[0].ids).ends_with(&want), "{n} levels");
+        }
+        let ten = rows(&l, json!("s"), json!({"q": score(10)})).unwrap();
+        assert_eq!(ten[0].slots, (18..28).collect::<Vec<_>>());
+        assert!(text(&ten[0].ids).ends_with("Options:\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n\nAnswer:"));
+    }
+
+    #[test]
+    fn takes_up_to_sixteen_options() {
+        let q = json!({"q": choice(16)});
+        let r = rows(&layout(8192), json!("s"), q).unwrap();
+        assert_eq!(r[0].slots, (2..18).collect::<Vec<_>>());
+        assert!(text(&r[0].ids).ends_with("\nP. o15\n\nAnswer:"));
+    }
+
+    #[test]
+    fn rejects_what_the_head_cannot_answer() {
+        let l = layout(8192);
+        let ok = json!({"type": "noul", "instructions": "fine?"});
+        let many = rows(&l, json!("s"), json!({"ok": ok, "q": choice(17)}));
+        assert!(matches!(
+            many,
+            Err(Error::TooManyOptions {
+                options: 17,
+                head_max_len: 16,
+                ..
+            })
+        ));
+        let r = rows(&l, json!("s"), json!({"ok": ok, "q": score(17)}));
+        assert!(matches!(
+            r,
+            Err(Error::TooManyOptions {
+                options: 17,
+                head_max_len: 16,
+                ..
+            })
+        ));
+        let list = json!({"type": "choice", "instructions": "x", "criteria": ["a", "b"]});
+        let r = rows(&l, json!("s"), json!({"q": list}));
+        assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("non-empty object")));
+        let r = rows(&layout(40), json!("y".repeat(40)), json!({"q": ok}));
+        assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("reads up to 40")));
+    }
+
+    #[test]
+    fn validates_the_slots() {
+        layout(8192).validate().unwrap();
+        let mut l = layout(8192);
+        l.slots.score.push(28);
+        assert!(l.validate().is_err());
+        let mut l = layout(8192);
+        l.slots.choice = (2..19).collect();
+        assert!(l.validate().is_err());
+    }
+}

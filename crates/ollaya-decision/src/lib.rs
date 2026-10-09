@@ -7,6 +7,7 @@
 
 pub mod answer;
 pub mod arbiter;
+pub mod arbiter12b;
 pub mod calibration;
 pub mod clm;
 pub mod cygnet;
