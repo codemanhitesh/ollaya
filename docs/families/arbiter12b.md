@@ -79,8 +79,11 @@ more than T4×2 (32 GB); run the ONNX export with CPU/offload or on a larger GPU
       **Landed + validated bit-exact** (max abs diff 0.0) vs transformers' own `Gemma4UnifiedTextModel.forward`
       on a tiny random model exercising sliding + full attention, the KV-sharing tail, dual RoPE, `v_norm` and
       `layer_scalar`. It reuses the HF decoder layers/rotary/norm and only re-expresses the cache-free masks.
-- [ ] `convert/ollaya_convert/families/arbiter12b/{export.py, ref.py, goldens.py, parity.py, check.py}` — copy
-      from `arbiter/`, swap `gemma3` → `gemma4`, 24 → 28, 6 → 10 score levels, point at the 12B weights.
+- [x] `ref.py` (landed, prompts verified) and `export.py` (landed): the ONNX graph `Arbiter12bGraph`
+      (Gemma4Trunk + 28-slot head), the weightless **rename verified against the real checkpoints** (all 1,323
+      base+adapter tensor names map), decision.json for `arbiter-fixed-v2`. `torch.export` traces the recompute
+      cleanly (probe: 1723 nodes, exported-vs-eager 0.0). TODO: `goldens.py`/`parity.py`/`check.py` + actually
+      RUN the export (fp32 12B ~48 GB → `--device auto` offload or a >=64 GB box).
 - [ ] `crates/ollaya-decision/src/arbiter12b.rs` — copy `arbiter.rs`; `SCORE_LEVELS 6 → 10`,
       `SCORE_BLOCK "0..9"`, `num_slots 28`; register in `decision.rs` / `lib.rs`.
 - [ ] `crates/ollaya-runner/src/arbiter12b.rs` (+ `examples/parity_arbiter12b.rs`) — copy `arbiter.rs` runner;
